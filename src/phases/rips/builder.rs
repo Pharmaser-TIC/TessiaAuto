@@ -12,6 +12,7 @@ use super::java::{
     normalize_zona, truncate_utf16,
 };
 use super::model::{Medicamento, OtroServicio, Rips, Servicios, Usuario};
+use crate::phases::convenio_preparar::mipres::same_delivery_id;
 
 // Constants hardcoded in EnvioRIPS_Financiera_Extra.
 const TIPO_MEDICAMENTO: &str = "01";
@@ -38,6 +39,8 @@ pub const CODE_AFFILIATE_MISMATCH: &str = "AFILIADO_NO_COINCIDE";
 pub const CODE_RIGHTS_NOT_OK: &str = "DERECHOS_NO_OK";
 /// Skip code: the invoice is excluded or in manual review in the convenio.
 pub const CODE_CONVENIO_NOT_OK: &str = "CONVENIO_NO_OK";
+/// Skip code: the stored MIPRES delivery ids do not pair with the NO PBS lines.
+pub const CODE_MIPRES_MISMATCH: &str = "MIPRES_INCONSISTENTE";
 
 /// Why an invoice gets no RIPS JSON. `detail` never carries patient document
 /// numbers.
@@ -102,20 +105,64 @@ pub fn build(input: &RipsInput, aff: &AffiliateRights, opts: &RipsOptions) -> Bu
     if opts.nit.is_empty() || opts.cod_prestador.is_empty() {
         bail!("rips: NIT and CodPrestador are required");
     }
-    let no_pbs_lines = input
-        .lines
-        .iter()
-        .filter(|l| !java_trim(&l.mipres).is_empty())
-        .count();
-    if no_pbs_lines != input.id_mipres.len() {
-        bail!(
-            "rips: factura {}: datos inconsistentes: {} ids de entrega MIPRES guardados para {} lineas NO PBS",
-            input.invoice,
-            input.id_mipres.len(),
-            no_pbs_lines
+    Ok(build_document(input, aff, opts))
+}
+
+/// Pairs every line with its MIPRES delivery id (`idMIPRES`), mirroring how
+/// `convenio preparar` stored them (`mipres::check_invoice`): only lines with
+/// both a prescription and a No. Formula were checked, and each distinct
+/// delivery was stored once, in line order. So lines of the same delivery
+/// (same prescription and No. Formula) share one id, and a NO PBS line without
+/// a No. Formula has none (`null`, as before the delivery ids). Ids that do
+/// not pair exactly are a data error of this invoice (manual review), never a
+/// guess and never a reason to stop the other invoices.
+fn pair_delivery_ids(input: &RipsInput) -> Result<Vec<Option<&str>>, SkipError> {
+    let mut stored = input.id_mipres.iter();
+    let mut deliveries: Vec<(&str, &str, &str)> = Vec::new();
+    let mut paired = Vec::with_capacity(input.lines.len());
+    for line in &input.lines {
+        let prescription = line.mipres.trim();
+        let formula = line.formula_number.trim();
+        if java_trim(&line.mipres).is_empty() || prescription.is_empty() || formula.is_empty() {
+            paired.push(None);
+            continue;
+        }
+        let known = deliveries
+            .iter()
+            .find(|(p, f, _)| *p == prescription && same_delivery_id(f, formula));
+        let id = match known {
+            Some((_, _, id)) => *id,
+            None => {
+                let Some(id) = stored.next() else {
+                    return Err(mipres_mismatch(input, deliveries.len() + 1));
+                };
+                deliveries.push((prescription, formula, id.as_str()));
+                id.as_str()
+            }
+        };
+        paired.push(Some(id));
+    }
+    if stored.next().is_some() {
+        return Err(mipres_mismatch(input, deliveries.len()));
+    }
+    Ok(paired)
+}
+
+fn mipres_mismatch(input: &RipsInput, deliveries: usize) -> SkipError {
+    if input.id_mipres.is_empty() {
+        return SkipError::new(
+            CODE_MIPRES_MISMATCH,
+            "la factura tiene lineas NO PBS con No. Formula pero no tiene ids de entrega MIPRES guardados (no se verifico en MIPRES al preparar); vuelva a preparar el convenio",
         );
     }
-    Ok(build_document(input, aff, opts))
+    SkipError::new(
+        CODE_MIPRES_MISMATCH,
+        format!(
+            "{} ids de entrega MIPRES guardados para al menos {} entregas NO PBS distintas (prescripcion + No. Formula); vuelva a preparar el convenio",
+            input.id_mipres.len(),
+            deliveries
+        ),
+    )
 }
 
 fn build_document(
@@ -139,7 +186,8 @@ fn build_document(
         ));
     }
     let tipo_usuario = normalize_tipo_usuario(&aff.rights.user_type);
-    let (meds, oss) = build_services(input, &tipo_usuario, opts)?;
+    let delivery_ids = pair_delivery_ids(input)?;
+    let (meds, oss) = build_services(input, &delivery_ids, &tipo_usuario, opts)?;
     let user = Usuario {
         tipo_documento_identificacion: first.doc_type.clone(),
         num_documento_identificacion: first.doc_number.clone(),
@@ -180,19 +228,13 @@ type Services = (Vec<Medicamento>, Vec<OtroServicio>);
 
 fn build_services(
     input: &RipsInput,
+    delivery_ids: &[Option<&str>],
     tipo_usuario: &str,
     opts: &RipsOptions,
 ) -> Result<Services, SkipError> {
     let mut meds = Vec::new();
     let mut oss = Vec::new();
-    let mut delivery_ids = input.id_mipres.iter();
-    for line in &input.lines {
-        let mipres_id: Option<&str> = if java_trim(&line.mipres).is_empty() {
-            None
-        } else {
-            // Count validated in build_document; ids follow the NO PBS line order.
-            Some(delivery_ids.next().expect("one id per NO PBS line"))
-        };
+    for (line, mipres_id) in input.lines.iter().zip(delivery_ids.iter().copied()) {
         let invalid = |detail: String| {
             SkipError::new(
                 CODE_INVALID_DATA,
@@ -763,59 +805,113 @@ mod tests {
         assert_eq!(m.id_mipres, None);
     }
 
+    fn no_pbs(mut line: RipsLine, prescription: &str, formula: &str) -> RipsLine {
+        line.mipres = prescription.into();
+        line.formula_number = formula.into();
+        line
+    }
+
+    fn mipres_ids(rips: &Rips) -> Vec<Option<String>> {
+        let s = &rips.usuarios[0].servicios;
+        let meds = s.medicamentos.iter().flatten().map(|m| m.id_mipres.clone());
+        let oss = s
+            .otros_servicios
+            .iter()
+            .flatten()
+            .map(|o| o.id_mipres.clone());
+        meds.chain(oss).collect()
+    }
+
+    fn with_ids(lines: Vec<RipsLine>, ids: &[&str]) -> RipsInput {
+        RipsInput {
+            invoice: "FVS1".into(),
+            lines,
+            id_mipres: ids.iter().map(|id| (*id).to_owned()).collect(),
+        }
+    }
+
     #[test]
     fn mipres_delivery_ids_follow_the_no_pbs_line_order() {
-        let mut med = med_line(2);
-        med.mipres = "MIP-1".into();
-        let mut os = os_line(3);
-        os.mipres = "MIP-2".into();
-        let inp = RipsInput {
-            invoice: "FVS1".into(),
-            lines: vec![med, os],
-            id_mipres: vec!["E-1".into(), "E-2".into()],
-        };
+        let inp = with_ids(
+            vec![
+                no_pbs(med_line(2), "MIP-1", "10"),
+                no_pbs(os_line(3), "MIP-2", "20"),
+            ],
+            &["E-1", "E-2"],
+        );
         let rips = build(&inp, &affiliate("01"), &opts())
             .expect("build")
             .expect("not skipped");
-        let s = &rips.usuarios[0].servicios;
         assert_eq!(
-            s.medicamentos.as_ref().expect("meds")[0]
-                .id_mipres
-                .as_deref(),
-            Some("E-1")
-        );
-        assert_eq!(
-            s.otros_servicios.as_ref().expect("oss")[0]
-                .id_mipres
-                .as_deref(),
-            Some("E-2")
+            mipres_ids(&rips),
+            [Some("E-1".to_owned()), Some("E-2".to_owned())]
         );
     }
 
     #[test]
-    fn a_mipres_id_count_mismatch_is_a_data_error_not_a_guess() {
-        let mut med = med_line(2);
-        med.mipres = "MIP-1".into();
-        // One NO PBS line but two stored ids.
-        let inp = RipsInput {
-            invoice: "FVS1".into(),
-            lines: vec![med.clone()],
-            id_mipres: vec!["E-1".into(), "E-2".into()],
-        };
-        let error = build(&inp, &affiliate("01"), &opts()).expect_err("mismatch");
-        let message = format!("{error:#}");
-        assert!(message.contains("FVS1"), "{message}");
-        assert!(message.contains("2"), "{message}");
-        assert!(message.contains("1"), "{message}");
-        // Two NO PBS lines but one stored id.
-        let mut os = os_line(3);
-        os.mipres = "MIP-2".into();
-        let inp = RipsInput {
-            invoice: "FVS1".into(),
-            lines: vec![med, os],
-            id_mipres: vec!["E-1".into()],
-        };
-        assert!(build(&inp, &affiliate("01"), &opts()).is_err());
+    fn lines_of_the_same_delivery_share_its_single_stored_id() {
+        // convenio preparar stores each distinct delivery once (FVS1713206:
+        // two NO PBS lines, one stored id).
+        let inp = with_ids(
+            vec![
+                no_pbs(med_line(2), "MIP-1", "10"),
+                no_pbs(med_line(3), "MIP-2", "30"),
+                no_pbs(med_line(4), " MIP-1 ", "010"),
+            ],
+            &["E-10", "E-30"],
+        );
+        let rips = build(&inp, &affiliate("01"), &opts())
+            .expect("build")
+            .expect("not skipped");
+        assert_eq!(
+            mipres_ids(&rips),
+            [
+                Some("E-10".to_owned()),
+                Some("E-30".to_owned()),
+                Some("E-10".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_no_pbs_line_without_formula_has_no_id_and_consumes_none() {
+        // convenio preparar does not check such a line, so it stored no id.
+        let inp = with_ids(
+            vec![
+                no_pbs(med_line(2), "MIP-1", " "),
+                no_pbs(med_line(3), "MIP-2", "7"),
+            ],
+            &["E-7"],
+        );
+        let rips = build(&inp, &affiliate("01"), &opts())
+            .expect("build")
+            .expect("not skipped");
+        assert_eq!(mipres_ids(&rips), [None, Some("E-7".to_owned())]);
+    }
+
+    #[test]
+    fn mipres_ids_that_do_not_pair_are_a_manual_review_not_a_run_error() {
+        let cases: [(Vec<RipsLine>, &[&str]); 3] = [
+            // More stored ids than deliveries.
+            (vec![no_pbs(med_line(2), "MIP-1", "10")], &["E-1", "E-2"]),
+            // Fewer stored ids than deliveries.
+            (
+                vec![
+                    no_pbs(med_line(2), "MIP-1", "10"),
+                    no_pbs(os_line(3), "MIP-2", "20"),
+                ],
+                &["E-1"],
+            ),
+            // Never checked in MIPRES.
+            (vec![no_pbs(med_line(2), "MIP-1", "10")], &[]),
+        ];
+        for (lines, ids) in cases {
+            let skip = build(&with_ids(lines, ids), &affiliate("01"), &opts())
+                .expect("a data error of the invoice, not a run error")
+                .expect_err("skipped");
+            assert_eq!(skip.code, CODE_MIPRES_MISMATCH, "{ids:?}");
+            assert!(skip.detail.contains("vuelva a preparar"), "{}", skip.detail);
+        }
     }
 
     #[test]
