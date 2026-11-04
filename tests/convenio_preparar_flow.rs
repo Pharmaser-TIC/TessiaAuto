@@ -478,7 +478,9 @@ fn with_mipres(ctx: AppContext, server: &MockServer) -> AppContext {
 #[test]
 fn evento_no_pbs_invoices_are_checked_against_mipres() {
     let (_db, ctx, dir) = setup();
-    let server = mipres_server(r#"[{"ID":"007","EstEntrega":2},{"ID":"8","EstEntrega":0}]"#);
+    let server = mipres_server(
+        r#"[{"ID":"007","IDEntrega":"0E77","EstEntrega":2},{"ID":"8","IDEntrega":"0E8","EstEntrega":0}]"#,
+    );
     let ctx = with_mipres(ctx, &server);
     let path = write_csv(dir.path(), "Manual_m.csv", &no_pbs_csv());
     let plan = plan_preparation(&ctx, &request(&path), None).expect("plan");
@@ -488,8 +490,8 @@ fn evento_no_pbs_invoices_are_checked_against_mipres() {
     let by_name = |n: &str| ds.invoice(n).map(|i| i.id_mipres.clone());
     assert_eq!(
         by_name("EVS1").as_deref(),
-        Some("007"),
-        "the delivery id as MIPRES spells it"
+        Some("0E77"),
+        "the IDEntrega (not the ID matched against the No. Formula), as MIPRES spells it"
     );
     assert_eq!(
         by_name("EVS3").as_deref(),
