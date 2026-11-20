@@ -30,6 +30,7 @@ use super::csv::has_prepared_format;
 use super::mipres::{MipresChecker, MipresError, MipresRun, Verdict, is_evento_no_pbs};
 use super::subplan::{AutomaticSubplans, selected_set, subplan_of};
 use crate::domain::dataset::{Excluded, Invoice, Line, ManualReview, Stats};
+use crate::domain::valid_invoice;
 use crate::util::decimal::parse_agreement_amount;
 
 /// Code of an invoice whose lines name more than one affiliate.
@@ -233,6 +234,14 @@ fn evaluate(
     forced: bool,
     mipres: &mut Option<MipresRun<'_>>,
 ) -> Result<Outcome, MipresError> {
+    // Every later phase (thefactory, radicacion, soporte) rejects a number
+    // that is not 3 letters + digits, and one such error aborts the whole run.
+    // It is a data error of this invoice, so it stops here and the rest go on.
+    if !valid_invoice(invoice) {
+        return Ok(Outcome::Excluded(format!(
+            "Numero de factura invalido '{invoice}': se espera prefijo de 3 letras y digitos (ej. EVS100); revisar el CSV."
+        )));
+    }
     let subplan = subplan_of(lines.iter().copied());
     if !forced && !context.options.automatic.allows(&subplan) {
         let shown = if subplan.is_empty() {

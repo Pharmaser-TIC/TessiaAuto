@@ -1075,3 +1075,25 @@ fn the_allowlist_composes_with_the_mipres_check() {
     assert_eq!(result.invoices.len(), 1);
     assert_eq!(fake.calls(), ["P1"], "forced invoices are still verified");
 }
+
+#[test]
+fn an_invoice_number_without_the_letter_prefix_is_excluded_not_prepared() {
+    let lines = [
+        line("1759279", "20010_01", "19950404-1", "1500,00", "1500"),
+        line("EVS1", "20010_01", "19950404-1", "1500,00", "1500"),
+    ];
+    let result = Run::new("250000").ok(&lines);
+    assert_eq!(excluded_ids(&result), "1759279");
+    assert_eq!(result.invoices.len(), 1, "the well-formed one still goes on");
+    assert!(
+        result.excluded[0].reason.contains("1759279") && result.excluded[0].reason.contains("EVS"),
+        "the reason names the number and the expected shape: {}",
+        result.excluded[0].reason
+    );
+    let forced = Run::new("250000").only(&["1759279"]).ok(&lines);
+    assert_eq!(
+        excluded_ids(&forced),
+        "1759279",
+        "--invoices does not bypass the format check"
+    );
+}
