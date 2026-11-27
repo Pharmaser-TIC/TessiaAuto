@@ -1,0 +1,24 @@
+# resiliencia-fase-2
+Objective: finish the third-party resilience work: scheduled retries, a per-provider circuit breaker, safe resend of the CUV, visibility per provider, and token classification for SISPRO / radicación.
+Branch: feat/resiliencia-fase-2 (from main after PR #10) | Delivery: ask-on-risk (no push/PR/merge without the user) | Runner: `cargo test --no-fail-fast` against local Postgres 18 (127.0.0.1:55432) and Redis 7 (127.0.0.1:56379); a comparison of failing sets without Postgres hides real failures (learned in PR #7)
+
+## Specs
+- S1: "Los pasos que hacen falta, enfócate en eso" (the pending steps of `docs/tareas-pendientes/resiliencia-ante-terceros.md`: 3 reintento programado con `next_attempt_at` (minutos, luego horas), 4 cortacircuitos por tercero, 5 idempotencia en efectos externos, 6 visibilidad por tercero; and the SISPRO/radicación token classification left out of the first PR).
+- S2 (token classification): a SISPRO or radicación login that cannot be reached (transport error, 408/425/429/5xx) is `Unreachable`, not a credentials rejection; a 4xx or a malformed answer stays a rejection. Behaviour that depends on it (the `cuv` token tally, the radicación client errors) keeps working.
+- S3 (circuit breaker): each provider has a breaker. It opens when, in a sliding window of recent calls, the share of provider-unhealthy outcomes (transport error, 408/425/429, 5xx; never other 4xx) reaches a threshold with a minimum sample. While open, a call fails at once with `HttpError::CircuitOpen` and sends nothing. After a cool-down one probe goes through (half-open): success closes it, failure reopens it for longer (capped). It is per process.
+- S4 (scheduled retry): an invoice that stops in a phase because a third party is down (an outage, or an open breaker) is retried in the same run after a growing delay, from that same phase, instead of being dropped. It counts as failed only when the schedule is spent. Other invoices keep going; a cancelled run drops the waiting ones; the delay never ends the run early. The wait is stored in `proceso_estado.next_attempt_at` (state FAILED + reason) so it can be seen; an empty schedule keeps today's behaviour.
+- S5 (idempotence of the CUV send): a transport failure on `CargarFevRips` leaves the invoice FAILED and resumable; sending it again must end DONE with the CUV that SISPRO already holds (the RVG18 "ya validado" answer), without a duplicate. Pinned by tests; the single call still never retries inside itself.
+- S6 (visibility): the API reports, per provider, its breaker state, recent failures, last error and when it may be probed again, and the invoices waiting for a retry (by phase, with the next retry time). The dashboard shows it.
+- Not in scope: a breaker shared between processes, anything cloud, changing the number of attempts inside one HTTP call.
+
+## Tasks
+- [ ] T1 (S2) SISPRO and radicación login: `Unreachable` vs `Rejected` — inline — commit: pending
+- [ ] T2 (S3) `CircuitBreaker` + registry + `send_with_retry` integration + wiring per provider — inline — commit: pending
+- [ ] T3 (S4) delayed retry in the pipeline, `next_attempt_at` stored, breaker-aware delay — inline — commit: pending
+- [ ] T4 (S5) CUV resend after an uncertain send: tests (and the fix only if a test shows a gap) — inline — commit: pending
+- [ ] T5 (S6) `GET` of provider state and waiting invoices + dashboard card — inline — commit: pending
+
+## Log
+- L1 (2026-11-27, user): "Los pasos que hacen falta, enfócate en eso"
+- L2 context: PR #9 made outages resumable (the invoice is dropped from the run, stays for the next one). Evidence for the design: `proceso_estado.next_attempt_at` exists and nothing writes it; `AdaptiveLimiter` per provider already sees every attempt; `RetryPolicy` is the one place every HTTP call passes through (`send_with_retry`); the desktop app runs the API and the jobs in one process, so an in-memory breaker is visible to the UI.
+- L3 design note for S5: `cuv` "never retries" means inside one call. Across runs a FAILED invoice is already sent again, and an invoice already validated comes back as RVG18 with its CUV (`sweep`), so the resend is safe by the Ministry's own answer; this is an assumption from the code and must be confirmed against SISPRO.
