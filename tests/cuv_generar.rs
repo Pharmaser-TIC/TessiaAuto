@@ -495,6 +495,47 @@ fn an_unreachable_sispro_is_stored_as_an_outage_not_as_a_fault_of_the_invoice() 
 }
 
 #[test]
+fn an_invoice_sent_with_an_unknown_outcome_is_safe_to_send_again() {
+    // First run: SISPRO answers 503, we cannot know whether it kept the
+    // invoice. The invoice is left as an outage, not as a rejection.
+    let db = TestDb::new();
+    let (regimen, contrato, input, _) = xml_case("contributivo");
+    let down = FakeSispro::start(answers(&[("FVS103", 503, "{}".to_owned())]));
+    let ctx = context(&db, down.url(), &contrato);
+    seed(&ctx, "FVS103", &regimen, Some(&input));
+
+    run_phase(&ctx, &request(None)).expect("first run");
+    let (state, motivo) = stored(&ctx, "FVS103");
+    assert_eq!(state, PhaseState::Failed);
+    assert!(
+        motivo.starts_with("TERCERO_NO_DISPONIBLE: HTTP 503"),
+        "{motivo}"
+    );
+    assert!(!published(&ctx, "FVS103.txt"), "no CUV was recorded");
+    assert_eq!(
+        down.count(CARGAR),
+        1,
+        "one send per run, never retried inside it"
+    );
+
+    // Second run, SISPRO is back and already holds the invoice (the first send
+    // did arrive): it answers RVG18 with the CUV it has. The resend ends DONE
+    // with that CUV: no duplicate, no manual review.
+    let resp =
+        |name: &str| String::from_utf8(read(&format!("respuestas/{name}.txt"))).expect("utf8");
+    let back = FakeSispro::start(answers(&[("FVS103", 201, resp("rvg18"))]));
+    let settings = ctx.settings.clone().with("minsalud.base_url", back.url());
+    let ctx = ctx.with_settings(settings);
+    run_phase(&ctx, &request(None)).expect("second run");
+    assert_eq!(stored(&ctx, "FVS103").0, PhaseState::Done);
+    assert!(
+        tessia::phases::cuv::txt::txt_has_cuv(&fetch(&ctx, "FVS103.txt")),
+        "the existing CUV was kept"
+    );
+    assert_eq!(back.count(CARGAR), 1);
+}
+
+#[test]
 fn login_failures_fail_the_run_after_saving_and_the_threshold_is_configurable() {
     let db = TestDb::new();
     let (regimen, contrato, input, _) = xml_case("contributivo");
