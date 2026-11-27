@@ -21,13 +21,19 @@ use anyhow::Error;
 
 use crate::db::DbError;
 use crate::domain::PhaseState;
+use crate::http::HttpError;
 use crate::phases::common::PhaseReport;
 use crate::phases::conciliar::plan::Incomplete;
 use crate::phases::cuv::MissingRipsJsonError;
 use crate::phases::derechos::DerechosError;
+use crate::storage::StorageError;
 
 /// Skip reason of an invoice another machine has claimed.
 pub const OTHER_MACHINE: &str = "EN_PROCESO_OTRA_MAQUINA";
+
+/// Reason of an invoice that stopped because a provider or the network was down.
+pub const THIRD_PARTY_OUTAGE: &str =
+    "un servicio externo no respondio: la factura se reintenta en la proxima ejecucion";
 
 /// Reason shown for an invoice whose database connection stayed lost.
 pub const STORE_UNAVAILABLE: &str = "conexión con la base de datos perdida: reintentos agotados";
@@ -103,6 +109,21 @@ impl Verdict {
     }
 }
 
+/// True when the chain holds an outage of a third party or of the network
+/// (a transport failure that survived the retries, or a storage service that
+/// is unreachable / answering 5xx): retrying the invoice later can cure it.
+pub fn is_third_party_outage(err: &Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<StorageError>(),
+            Some(StorageError::Unavailable(_))
+        ) || matches!(
+            cause.downcast_ref::<HttpError>(),
+            Some(HttpError::Transport { .. })
+        )
+    })
+}
+
 /// True when the chain holds a database error that a retry could cure but
 /// that survived the store's own retries.
 pub fn is_transient_store_error(err: &Error) -> bool {
@@ -146,6 +167,15 @@ fn classify_error(phase: &str, invoice: &str, err: &Error) -> Verdict {
         return Verdict {
             conflict: true,
             ..Verdict::new(Status::Failed, STORE_UNAVAILABLE)
+        };
+    }
+    if is_third_party_outage(err) {
+        // The provider or the network is down, not this invoice: it stays
+        // for the next run and the others go on. The error is still reported.
+        return Verdict {
+            error: Some(format!("{err:#}")),
+            resumable: true,
+            ..Verdict::new(Status::Failed, THIRD_PARTY_OUTAGE)
         };
     }
     if phase == "conciliar"
@@ -383,6 +413,28 @@ mod tests {
         let down = classify("conciliar", "A1", Err(incomplete(0, 1, true).into()), &none);
         assert!(down.error.is_some() && down.resumable);
         assert_eq!(down.status, Status::Failed);
+    }
+
+    #[test]
+    fn an_unreachable_storage_fails_the_invoice_and_resumes_it_but_does_not_abort() {
+        let outage = anyhow::Error::new(crate::storage::StorageError::Unavailable(
+            "POST x/upload: se rindió tras 3 intentos: request or response body error".into(),
+        ))
+        .context("no se pudo publicar F1.xml");
+        let v = classify("thefactory", "F1", Err(outage), &none);
+        assert_eq!(v.status, Status::Failed);
+        assert!(v.resumable && !v.fatal, "an outage must not abort the run");
+        assert!(
+            v.error
+                .is_some_and(|e| e.contains("no se pudo publicar F1.xml")),
+            "the error is still reported"
+        );
+        // A rejection by the service is not an outage: it still aborts.
+        let denied = anyhow::Error::new(crate::storage::StorageError::Failed(
+            "HTTP 403: forbidden".into(),
+        ));
+        let v = classify("thefactory", "F1", Err(denied), &none);
+        assert!(!v.resumable && v.error.is_some());
     }
 
     #[test]

@@ -19,6 +19,7 @@ use std::fmt;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response, multipart};
@@ -27,7 +28,9 @@ use serde::Deserialize;
 
 use super::{ListPage, ObjectInfo, ObjectStore, StorageError, StorageResult};
 use crate::config::Settings;
-use crate::http::{ClientOptions, RetryEvent, RetryPolicy, build_client, send_with_retry};
+use crate::http::{
+    ClientOptions, HttpError, RetryEvent, RetryPolicy, build_client, send_with_retry,
+};
 use crate::util::fsx;
 
 /// Cassandra-backed bucket.
@@ -74,8 +77,10 @@ struct ItemBody {
 }
 
 impl CassandraStore {
-    /// Builds a store against `base_url` / `bucket`. Retries use the default
-    /// [`RetryPolicy`] (3 attempts) and log each retry without the URL query.
+    /// Builds a store against `base_url` / `bucket`. Retries ride out a
+    /// network blip (6 attempts, 0.5 s doubling up to 8 s: about 15 s in
+    /// total, not the default 3 attempts in under a second) and log each retry
+    /// without the URL query.
     pub fn new(base_url: &str, bucket: &str, api_key: &str) -> anyhow::Result<Self> {
         let client = build_client(&ClientOptions::default())?;
         Ok(Self::with_client(client, base_url, bucket, api_key))
@@ -96,6 +101,9 @@ impl CassandraStore {
             bucket: bucket.to_owned(),
             api_key: api_key.to_owned(),
             retry: RetryPolicy {
+                max_attempts: 6,
+                base_delay: Duration::from_millis(500),
+                max_delay: Duration::from_secs(8),
                 on_retry: Some(on_retry),
                 ..RetryPolicy::default()
             },
@@ -138,8 +146,7 @@ impl CassandraStore {
     }
 
     fn send(&self, build: impl FnMut() -> RequestBuilder) -> StorageResult<Response> {
-        send_with_retry(&self.retry, None, build)
-            .map_err(|err| StorageError::Failed(err.to_string()))
+        send_with_retry(&self.retry, None, build).map_err(from_http)
     }
 
     fn authed(&self, request: RequestBuilder) -> RequestBuilder {
@@ -157,7 +164,11 @@ impl CassandraStore {
         if status == StatusCode::NOT_FOUND {
             return StorageError::NotFound(key.to_owned());
         }
-        StorageError::Failed(format!("HTTP {}: {message}", status.as_u16()))
+        let text = format!("HTTP {}: {message}", status.as_u16());
+        if is_outage_status(status) {
+            return StorageError::Unavailable(text);
+        }
+        StorageError::Failed(text)
     }
 
     fn upload(
@@ -182,7 +193,7 @@ impl CassandraStore {
             self.authed(self.client.post(url.clone()))
                 .multipart(form.text("name", key.to_owned()))
         })
-        .map_err(|err| StorageError::Failed(err.to_string()))?;
+        .map_err(from_http)?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -197,6 +208,20 @@ impl CassandraStore {
         }
         Err(self.failure(response, key))
     }
+}
+
+/// A transport failure (no answer after the retries) is an outage of the
+/// service; a request that could not even be built is not.
+fn from_http(err: HttpError) -> StorageError {
+    match err {
+        HttpError::Transport { .. } => StorageError::Unavailable(err.to_string()),
+        HttpError::Build(_) => StorageError::Failed(err.to_string()),
+    }
+}
+
+/// Statuses that say "the service is struggling", not "your request is wrong".
+fn is_outage_status(status: StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 425 | 429 | 500..=599)
 }
 
 fn file_part(path: &Path, key: &str, content_type: &str) -> StorageResult<multipart::Part> {
@@ -338,6 +363,42 @@ mod tests {
         CassandraStore::new(server.url(), "b1", "SECRET-KEY")
             .expect("store")
             .with_retry(RetryPolicy::instant(3))
+    }
+
+    #[test]
+    fn an_unreachable_service_is_an_outage_not_a_generic_failure() {
+        let down = CassandraStore::new("http://127.0.0.1:9", "b1", "K")
+            .expect("store")
+            .with_retry(RetryPolicy::instant(2));
+        let err = down
+            .put_bytes("k", b"x", "text/plain")
+            .expect_err("nothing listens");
+        assert!(matches!(err, StorageError::Unavailable(_)), "{err}");
+        let err = down.get_bytes("k").expect_err("nothing listens");
+        assert!(matches!(err, StorageError::Unavailable(_)), "{err}");
+    }
+
+    #[test]
+    fn a_server_error_after_the_retries_is_an_outage_but_a_rejection_is_not() {
+        let busy = MockServer::start(|_| MockResponse::text(503, "busy"));
+        let err = store(&busy)
+            .put_bytes("k", b"x", "text/plain")
+            .expect_err("503");
+        assert!(matches!(err, StorageError::Unavailable(_)), "{err}");
+        let denied = MockServer::start(|_| MockResponse::text(403, "forbidden"));
+        let err = store(&denied)
+            .put_bytes("k", b"x", "text/plain")
+            .expect_err("403");
+        assert!(matches!(err, StorageError::Failed(_)), "{err}");
+    }
+
+    #[test]
+    fn the_default_retries_span_several_seconds_not_a_blink() {
+        let store = CassandraStore::new("http://127.0.0.1:9", "b1", "K").expect("store");
+        let total: Duration = (1..store.retry.max_attempts)
+            .map(|attempt| store.retry.backoff(attempt))
+            .sum();
+        assert!(total >= Duration::from_secs(5), "{total:?}");
     }
 
     #[test]
