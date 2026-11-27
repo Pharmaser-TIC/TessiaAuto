@@ -1,23 +1,21 @@
-//! One module directory per command, so each phase writer only touches its own.
+//! One module directory per phase, so each phase writer only touches its own.
 //!
-//! | module | Go command | `run_phase` (used by `proceso run`) |
+//! | module | what it does | `run_phase` (used by `proceso run`) |
 //! |---|---|---|
-//! | [`convenio_descargar`] | `convenio descargar` | no |
-//! | [`convenio_preparar`] | `convenio preparar` | yes |
-//! | [`thefactory`] | `thefactory descargar` | yes |
-//! | [`derechos`] | `derechos validar` | yes |
-//! | [`fev`] | `fev verificar` | `run_verificar_phase` |
-//! | [`conciliar`] | `conciliar` | yes |
-//! | [`rips`] | `rips generar` | yes |
-//! | [`cuv`] | `cuv generar` | yes (`generar`) |
-//! | [`soporte`] | `soporte generar` | yes |
-//! | [`radicacion`] | `radicacion run` | yes |
-//! | [`proceso`] | `proceso run` | no (it is the caller) |
+//! | [`convenio_descargar`] | downloads the convenio CSV | no |
+//! | [`convenio_preparar`] | prepares the invoices of a cargue | yes |
+//! | [`thefactory`] | XML, PDF and CPScan support | yes |
+//! | [`derechos`] | rights validation | yes |
+//! | [`fev`] | XML total against the convenio | `run_verificar_phase` |
+//! | [`conciliar`] | rebuilds the lines of the invoices that differ | yes |
+//! | [`rips`] | RIPS JSON | yes |
+//! | [`cuv`] | CUV from SISPRO | yes |
+//! | [`soporte`] | CRC support zip | yes |
+//! | [`radicacion`] | filing in Mutual Ser | yes |
+//! | [`proceso`] | the whole per-invoice pipeline | no (it is the caller) |
 //!
-//! Each module has `cli.rs` (the clap `Args`, already wired in `crate::cli`)
-//! and `mod.rs` with `run(ctx, args)` for the command line and
-//! `run_phase(ctx, &PhaseRequest) -> PhaseReport` for the orchestrator.
-//! See [`common`] for the contract.
+//! Every phase module has `run_phase(ctx, &PhaseRequest) -> PhaseReport` for
+//! the orchestrator. See [`common`] for the contract.
 
 pub mod common;
 

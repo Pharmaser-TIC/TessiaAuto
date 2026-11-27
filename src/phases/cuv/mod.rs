@@ -17,7 +17,6 @@
 //!   [`run_phase_tallied`] with one [`TokenTally`] and [`check_alert`] at the end.
 
 pub mod availability;
-pub mod cli;
 pub mod generar;
 mod jsontree;
 pub mod model;
@@ -34,7 +33,6 @@ use crate::context::AppContext;
 use crate::phases::common::{PhaseReport, PhaseRequest};
 
 pub use availability::{TokenFailureError, TokenPolicy, TokenStats, TokenTally};
-pub use cli::Args;
 pub use generar::{Execution, MissingRipsJsonError, check_alert, resolve_policy};
 pub use sispro::{SisproClient, SisproError, SisproOptions};
 pub use txt::txt_has_cuv;
@@ -56,34 +54,6 @@ pub fn lease_name(cargue_id: &str, invoice: &str) -> String {
         "cuv:{cargue_id}:{}",
         crate::domain::normalize_invoice(invoice)
     )
-}
-
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    match args.command {
-        cli::Command::Generar(generar) => run_generar(ctx, &generar),
-    }
-}
-
-fn run_generar(ctx: &AppContext, args: &cli::GenerarArgs) -> Result<()> {
-    let request = args.common.to_request()?;
-    let tally = TokenTally::new();
-    let execution = generar::execute(ctx, &request, &tally)?;
-    for line in &execution.lines {
-        println!("{line}");
-    }
-    println!(
-        "cuv: ready={} skipped={}",
-        execution.submitted,
-        execution.report.skipped.len()
-    );
-    println!(
-        "cuv: with_cuv={} without_cuv={}",
-        execution.with_cuv,
-        execution.submitted.saturating_sub(execution.with_cuv)
-    );
-    println!("{}", execution.report.summary());
-    conclude(ctx, execution, Some(&tally)).map(|_| ())
 }
 
 /// Turns an [`Execution`] into the result of a run: the per-invoice

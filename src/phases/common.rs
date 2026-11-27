@@ -1,9 +1,8 @@
-//! The contract between `proceso run` and the phases, plus shared CLI flags.
+//! The contract between `proceso run` and the phases.
 //!
 //! A phase's `run_phase` receives a [`PhaseRequest`], does the work for the
 //! invoices of the cargue (claiming them in `proceso_estado`, running its
-//! worker threads, storing outcomes) and returns a [`PhaseReport`]. The
-//! standalone command (`run`) is the same function plus printing.
+//! worker threads, storing outcomes) and returns a [`PhaseReport`].
 //!
 //! Recommended shape of a phase's `run_phase`:
 //!
@@ -16,10 +15,7 @@
 //!    over: drop the result;
 //! 5. return the outcomes that were stored.
 
-use anyhow::Result;
-use clap::Args;
-
-use crate::domain::{Outcome, PhaseState, normalize_invoice};
+use crate::domain::{Outcome, PhaseState};
 
 /// What the orchestrator asks of a phase.
 #[derive(Debug, Clone, Default)]
@@ -125,43 +121,6 @@ impl PhaseReport {
     }
 }
 
-/// Flags shared by the phase commands (flatten them into a phase's `Args`
-/// with `#[command(flatten)]`).
-#[derive(Debug, Clone, Args, Default)]
-pub struct CommonArgs {
-    /// Cargue a procesar (el nombre del CSV sin extensión, p. ej. Convenio_21102026_21102026)
-    #[arg(long, value_name = "ID")]
-    pub cargue: Option<String>,
-    /// Procesar solo estas facturas (separadas por coma); se saltan las compuertas de fase
-    #[arg(long, value_name = "FACTURAS", value_delimiter = ',')]
-    pub invoices: Vec<String>,
-    /// Hilos de trabajo (por defecto el de cada fase)
-    #[arg(long, value_name = "N")]
-    pub workers: Option<usize>,
-}
-
-impl CommonArgs {
-    /// The cargue id, or an error naming the flag.
-    pub fn require_cargue(&self) -> Result<&str> {
-        self.cargue
-            .as_deref()
-            .filter(|c| !c.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("falta --cargue <ID> (el nombre del CSV sin extensión)"))
-    }
-
-    /// Builds the request; invoices are normalized and deduplicated.
-    pub fn to_request(&self) -> Result<PhaseRequest> {
-        let invoices = crate::domain::invoice::normalize_all(
-            self.invoices.iter().map(|i| normalize_invoice(i)),
-        );
-        Ok(PhaseRequest {
-            cargue_id: self.require_cargue()?.to_owned(),
-            invoices: (!invoices.is_empty()).then_some(invoices),
-            workers: self.workers,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,19 +151,12 @@ mod tests {
     }
 
     #[test]
-    fn common_args_build_a_normalized_request() {
-        let args = CommonArgs {
-            cargue: Some("C1".into()),
-            invoices: vec!["fev-1".into(), "FEV1".into(), "evs2".into()],
+    fn workers_default_to_the_phase_and_are_at_least_one() {
+        let zero = PhaseRequest {
             workers: Some(0),
+            ..PhaseRequest::new("C1")
         };
-        let request = args.to_request().expect("request");
-        assert_eq!(
-            request.invoices,
-            Some(vec!["FEV1".to_string(), "EVS2".to_string()])
-        );
-        assert_eq!(request.workers_or(10), 1);
+        assert_eq!(zero.workers_or(10), 1);
         assert_eq!(PhaseRequest::new("C1").workers_or(10), 10);
-        assert!(CommonArgs::default().to_request().is_err());
     }
 }

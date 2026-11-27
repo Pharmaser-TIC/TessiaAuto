@@ -67,10 +67,8 @@
 //! fake phases over a real database.
 
 pub mod classify;
-pub mod cli;
 pub mod concurrency;
 pub mod config;
-pub mod diario;
 pub mod events;
 pub mod lease;
 pub mod pipeline;
@@ -81,21 +79,7 @@ pub mod stdio;
 pub mod steps;
 pub mod supply;
 
-use anyhow::Result;
-
-use crate::context::AppContext;
-
-pub use cli::{Args, Command, RunArgs};
 pub use config::RunConfig;
 pub use events::{Event, Events, Mode};
 pub use run::{RunSummary, execute};
 pub use runner::PhaseRunner;
-
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    let Command::Run(args) = args.command;
-    let cfg = args.to_config()?;
-    let stream = stdio::open(cfg.mode);
-    let runner = PhaseRunner::real(&cfg);
-    execute(ctx, &cfg, &runner, &stream.events).map(|_| ())
-}

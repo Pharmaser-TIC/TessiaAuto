@@ -8,9 +8,9 @@ use tessia::context::AppContext;
 use tessia::db::test_support::TestDb;
 use tessia::domain::dataset::test_support::{DatasetBuilder, InvoiceBuilder, sample_line};
 use tessia::domain::{Phase, PhaseState};
-use tessia::phases::common::{CommonArgs, PhaseRequest};
+use tessia::phases::common::PhaseRequest;
+use tessia::phases::soporte;
 use tessia::phases::soporte::render::merge::page_texts;
-use tessia::phases::soporte::{self, cli};
 use tessia::stores::dataset::test_support::seed_cargue;
 
 const LOAD: &str = "Convenio_21102026_21102026";
@@ -145,27 +145,22 @@ fn a_cargue_without_a_dataset_is_an_error() {
 }
 
 #[test]
-fn the_command_runs_the_same_work_and_honours_regenerar() {
+fn the_phase_keeps_an_existing_zip_on_the_next_run() {
     let (_db, ctx) = setup();
     publish_nothing(&ctx, "FEV2");
-    let args = |regenerar: bool| cli::Args {
-        command: cli::Command::Generar(cli::GenerarArgs {
-            common: CommonArgs {
-                cargue: Some(LOAD.into()),
-                invoices: vec!["FEV2".into()],
-                workers: Some(2),
-            },
-            regenerar,
-        }),
+    let req = PhaseRequest {
+        cargue_id: LOAD.into(),
+        invoices: Some(vec!["FEV2".into()]),
+        workers: Some(2),
     };
-    soporte::run(&ctx, args(false)).expect("first run");
+    soporte::run_phase(&ctx, &req).expect("first run");
     let first = ctx
         .artefactos()
         .get(LOAD, "CRC/CRC_806011811_FEV2.zip")
         .expect("index")
         .expect("row");
     publish(&ctx, "FEV2.pdf", &text_pdf("FACTURA CORREGIDA", 1));
-    soporte::run(&ctx, args(false)).expect("kept");
+    soporte::run_phase(&ctx, &req).expect("kept");
     assert_eq!(
         ctx.artefactos()
             .get(LOAD, "CRC/CRC_806011811_FEV2.zip")
@@ -174,26 +169,4 @@ fn the_command_runs_the_same_work_and_honours_regenerar() {
             .sha256,
         first.sha256
     );
-    soporte::run(&ctx, args(true)).expect("regenerated");
-    assert_ne!(
-        ctx.artefactos()
-            .get(LOAD, "CRC/CRC_806011811_FEV2.zip")
-            .expect("index")
-            .expect("row")
-            .sha256,
-        first.sha256
-    );
-}
-
-#[test]
-fn the_command_needs_a_cargue() {
-    let (_db, ctx) = setup();
-    let args = cli::Args {
-        command: cli::Command::Generar(cli::GenerarArgs {
-            common: CommonArgs::default(),
-            regenerar: false,
-        }),
-    };
-    let err = soporte::run(&ctx, args).expect_err("no cargue");
-    assert!(err.to_string().contains("falta --cargue"));
 }

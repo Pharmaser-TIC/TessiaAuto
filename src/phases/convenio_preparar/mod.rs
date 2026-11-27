@@ -18,7 +18,6 @@
 
 pub mod amount;
 pub mod catalog;
-pub mod cli;
 pub mod csv;
 pub mod mipres;
 pub mod mipres_client;
@@ -32,40 +31,12 @@ pub mod subplan;
 pub mod summary;
 pub mod xlsx;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::context::AppContext;
 use crate::phases::common::{PhaseReport, PhaseRequest};
 
-pub use cli::Args;
 pub use run::{Plan, PrepareRequest, commit_preparation, plan_preparation};
-
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    if args.limit < 0 {
-        bail!("--limit must be >= 0");
-    }
-    let source = match (&args.source, &args.cargue) {
-        (Some(source), None) | (None, Some(source)) => source.clone(),
-        _ => bail!("uso: facturacion convenio preparar [opciones] <csv|cargue>"),
-    };
-    let request = PrepareRequest {
-        source,
-        max_amount: args.monto_maximo,
-        only: args.invoices,
-        limit: usize::try_from(args.limit).unwrap_or_default(),
-    };
-    let plan = plan_preparation(ctx, &request, None)?;
-    for line in summary_of(&plan) {
-        println!("{line}");
-    }
-    commit_preparation(ctx, &plan)?;
-    println!(
-        "{}",
-        summary::saved_line(plan.result.invoices.len(), &plan.load.id)
-    );
-    Ok(())
-}
 
 /// The console summary of a plan.
 pub fn summary_of(plan: &Plan) -> Vec<String> {

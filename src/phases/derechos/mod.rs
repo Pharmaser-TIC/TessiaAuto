@@ -29,7 +29,6 @@
 //! [`DerechosError::AuthenticationStopped`] is fatal for the whole pipeline.
 
 pub mod availability;
-pub mod cli;
 pub mod client;
 pub mod error;
 pub mod prepared;
@@ -44,19 +43,22 @@ use anyhow::{Result, bail};
 use chrono::Utc;
 
 pub use availability::{Policy, Stats, check_availability};
-pub use cli::Args;
 pub use error::DerechosError;
 pub use service::{InvoiceInput, InvoiceResult, LineInput};
 
 use crate::context::AppContext;
+use crate::domain::Phase;
 use crate::domain::invoice::normalize_all;
-use crate::domain::{Phase, PhaseState};
 use crate::phases::common::{PhaseReport, PhaseRequest};
 use crate::stores::proceso::{ClaimItem, ProcesoState};
 use crate::util::par;
-use cli::{Command, DEFAULT_CACHE_TTL, DEFAULT_CONCURRENCY};
 use client::{ClientConfig, shared_client};
 use service::ValidateOptions;
+
+/// Default parallel validator calls (Go `tessia.derechos.pool`).
+pub const DEFAULT_CONCURRENCY: usize = 30;
+/// Default freshness of the rights cache.
+pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// Skip reason of an invoice another machine is working on.
 pub const SKIP_OTHER_MACHINE: &str = "EN_PROCESO_OTRA_MAQUINA";
@@ -99,22 +101,6 @@ pub struct Execution {
     pub selected: usize,
     /// Set after the outcomes were saved: authentication stop or validator down.
     pub failure: Option<DerechosError>,
-}
-
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    let Command::Validar(args) = args.command;
-    let request = args.request()?;
-    let options = RunOptions {
-        concurrency: request.workers_or(DEFAULT_CONCURRENCY),
-        cache_ttl: args.cache_ttl,
-    };
-    let execution = run_with(ctx, &request, &options)?;
-    print_summary(&request.cargue_id, &execution);
-    match execution.failure {
-        Some(failure) => Err(failure.into()),
-        None => Ok(()),
-    }
 }
 
 /// Runs the phase for the invoices of `req` (called by `proceso run`). The
@@ -376,37 +362,5 @@ fn policy(ctx: &AppContext) -> Policy {
             min_sample: u32::try_from(stored.derechos_min_sample).unwrap_or(0),
         },
         _ => Policy::default(),
-    }
-}
-
-/// The console lines of Go's `derechos validar`.
-fn print_summary(cargue_id: &str, execution: &Execution) {
-    if execution.selected == 0 {
-        println!("no invoices pending rights validation in {cargue_id}");
-        return;
-    }
-    let mut done = 0;
-    for stored in &execution.report.outcomes {
-        if stored.outcome.state == PhaseState::Done {
-            done += 1;
-        } else {
-            println!(
-                "  {} {}: {}",
-                stored.invoice, stored.outcome.state, stored.outcome.motivo
-            );
-        }
-    }
-    for (invoice, reason) in &execution.report.skipped {
-        println!("  {invoice} omitida: {reason}");
-    }
-    println!(
-        "rights validated: done={done} manual_review={} (saved {}/)",
-        execution.report.outcomes.len() - done,
-        result_file::RESULT_DIR
-    );
-    if let Some(DerechosError::AuthenticationStopped { untouched, .. }) = &execution.failure {
-        println!(
-            "El validador de derechos rechazo el token o las credenciales aun despues de renovarlo: se detuvo la validacion. {untouched} factura(s) quedaron sin tocar y se retoman al volver a ejecutar; corrige las credenciales (derechos.*) y ejecuta de nuevo."
-        );
     }
 }

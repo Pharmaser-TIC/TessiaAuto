@@ -11,7 +11,7 @@ use tessia::db::test_support::TestDb;
 use tessia::domain::cargue::LoadOrigin;
 use tessia::phases::convenio_descargar::mock::{self, Link, Login, MockMedicar};
 use tessia::phases::convenio_descargar::{
-    Args, DownloadStatus, download_range, download_range_with, run,
+    DownloadStatus, download_range, download_range_with, resolve_range,
 };
 
 const ID: &str = "Convenio_21102026_21102026";
@@ -368,19 +368,11 @@ fn configured(ctx: AppContext, portal: &MockMedicar) -> AppContext {
     ctx.with_settings(settings)
 }
 
-fn args(desde: Option<&str>, hasta: Option<&str>, actual: bool) -> Args {
-    Args {
-        desde: desde.map(str::to_owned),
-        hasta: hasta.map(str::to_owned),
-        actual,
-    }
-}
-
 #[test]
-fn the_command_uses_the_medicar_settings() {
+fn the_download_uses_the_medicar_settings() {
     let (_db, ctx, portal) = setup();
     let ctx = configured(ctx, &portal);
-    run(&ctx, args(Some("2026-10-21"), Some("2026-10-21"), false)).expect("run");
+    download_range(&ctx, day(), day()).expect("download");
     assert!(ctx.artifacts().is_published(ID, FILE).expect("published"));
     assert_eq!(
         portal.count("POST", "exportarExcelConvenioArticulos.php"),
@@ -402,44 +394,42 @@ fn missing_medicar_settings_name_the_keys() {
 }
 
 #[test]
-fn date_flag_errors_come_before_any_request_or_config_check() {
-    let (_db, ctx, portal) = setup();
-    let ctx = configured(ctx, &portal);
+fn a_bad_date_range_is_rejected_before_any_request() {
+    let today = day();
     let cases = [
         (
-            args(Some("2026-10-01"), None, true),
+            (Some("2026-10-01"), None, true),
             "use either --actual or --desde/--hasta",
         ),
-        (args(None, None, false), "--desde must be YYYY-MM-DD"),
+        ((None, None, false), "--desde must be YYYY-MM-DD"),
         (
-            args(Some("2026-10-01"), Some("21/10/2026"), false),
+            (Some("2026-10-01"), Some("21/10/2026"), false),
             "--hasta must be YYYY-MM-DD",
         ),
         (
-            args(Some("2026-10-05"), Some("2026-10-04"), false),
+            (Some("2026-10-05"), Some("2026-10-04"), false),
             "--hasta is before --desde",
         ),
     ];
-    for (case, message) in cases {
-        let err = run(&ctx, case).expect_err(message);
+    for ((desde, hasta, actual), message) in cases {
+        let err = resolve_range(desde, hasta, actual, today).expect_err(message);
         assert_eq!(err.to_string(), message);
     }
-    assert!(portal.requests().is_empty());
-    assert_eq!(ctx.cargues().newest(ID).expect("newest"), None);
 }
 
 #[test]
 fn actual_downloads_the_current_month_through_today() {
     let (_db, ctx, portal) = setup();
     let ctx = configured(ctx, &portal);
-    run(&ctx, args(None, None, true)).expect("run --actual");
+    let today = chrono::Local::now().date_naive();
+    let (from, to) = resolve_range(None, None, true, today).expect("range");
+    download_range(&ctx, from, to).expect("download");
     let export = portal
         .requests()
         .into_iter()
         .find(|r| r.path.ends_with("exportarExcelConvenioArticulos.php"))
         .expect("export");
     let body = export.body_text();
-    let today = chrono::Local::now().date_naive();
     let first = today.format("%Y-%m-01").to_string();
     assert!(
         body.contains(&format!("name=\"f_fecha\"\r\n\r\n{first}\r\n")),

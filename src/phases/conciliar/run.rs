@@ -150,14 +150,9 @@ pub fn run_phase_detailed(
     execute(ctx, req, opts)
 }
 
-/// The command line: prints the lines and the summary, runs the follow-up and
-/// fails when any invoice ended blocked, different, in manual review or failed.
-pub fn run(ctx: &AppContext, args: super::cli::Args) -> Result<()> {
-    let req = args.common.to_request()?;
-    run_request(ctx, &req, &ConciliarOptions::standalone())
-}
-
-/// [`run`] for an explicit request and options.
+/// The standalone run for an explicit request and options (the UI job): prints
+/// the lines and the summary, runs the follow-up and fails when any invoice
+/// ended blocked, different, in manual review or failed.
 pub fn run_request(ctx: &AppContext, req: &PhaseRequest, opts: &ConciliarOptions) -> Result<()> {
     let exec = execute(ctx, req, opts)?;
     for line in &exec.lines {
