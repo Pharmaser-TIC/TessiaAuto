@@ -803,6 +803,29 @@ mod tests {
     }
 
     #[test]
+    fn an_invoice_waiting_for_a_retry_leaves_the_worker_but_counts_as_neither_done_nor_failed() {
+        let (mut job, _) = state();
+        // First attempt: a provider is down, the invoice waits.
+        job.observe(&enter("cuv", "A"));
+        job.observe(&step("cuv", "A", "WAITING"));
+        let waiting = &job.snapshot().fases[0];
+        assert_eq!(
+            (waiting.en_curso, waiting.terminadas, waiting.con_errores),
+            (0, 0, 0),
+            "not an error and not a result yet"
+        );
+        assert_eq!(job.error_total, 0, "nothing to blame yet");
+        // The retry ends well: only now it is counted, once.
+        job.observe(&enter("cuv", "A"));
+        job.observe(&step("cuv", "A", "OK"));
+        let done = &job.snapshot().fases[0];
+        assert_eq!(
+            (done.en_curso, done.terminadas, done.con_errores),
+            (0, 1, 0)
+        );
+    }
+
+    #[test]
     fn radicacion_batches_feed_its_meter_and_a_failed_one_is_one_error() {
         let (mut job, _) = state();
         job.observe(&Event {

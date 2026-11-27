@@ -866,3 +866,82 @@ fn an_open_breaker_stops_asking_the_provider_that_keeps_failing() {
     assert!(snapshot.opens >= 1, "{snapshot:?}");
     assert!(snapshot.last_error.is_some());
 }
+
+fn open_breaker(env: &mut Env, provider: &str) {
+    env.ctx.breakers = Arc::new(tessia::http::Breakers::with_config(
+        tessia::http::BreakerConfig {
+            window: 10,
+            min_calls: 4,
+            failure_ratio: 0.5,
+            open_for: Duration::from_millis(30),
+            max_open: Duration::from_millis(30),
+        },
+    ));
+    let breaker = env.ctx.breakers.get(provider);
+    for _ in 0..4 {
+        let ticket = breaker.allow().expect("admitted while closed");
+        breaker.record(ticket, false, Some("down"));
+    }
+    assert!(breaker.allow().is_err(), "it is open");
+    std::thread::sleep(Duration::from_millis(60));
+}
+
+#[test]
+fn a_phase_that_panics_does_not_leave_the_half_open_probe_in_flight() {
+    let mut env = setup();
+    open_breaker(&mut env, "derechos");
+    let mut cfg = csv_cfg(&env, &pos_rows(1));
+    quick_retries(&mut cfg, &[10]);
+    let (log, rad) = (Log::default(), batches());
+    // The probe is the first invoice that reaches derechos; its phase panics.
+    let runner = fake_runner(&log, &rad).with("derechos", |_, _| panic!("boom"));
+    let (summary, _) = run_with(&env, &cfg, &runner);
+    assert!(summary.is_err(), "a panic aborts the run");
+
+    // The probe was handed back: the next caller may probe instead of being
+    // refused for good.
+    let breaker = env.ctx.breakers.get("derechos");
+    assert!(
+        breaker.allow().is_ok(),
+        "the probe flag was left set: {:?}",
+        breaker.snapshot()
+    );
+}
+
+#[test]
+fn without_a_retry_schedule_an_open_breaker_does_not_stop_a_phase_from_running() {
+    let mut env = setup();
+    open_breaker(&mut env, "derechos");
+    // Keep it open for the whole run: a long period.
+    env.ctx.breakers = Arc::new(tessia::http::Breakers::with_config(
+        tessia::http::BreakerConfig {
+            window: 10,
+            min_calls: 4,
+            failure_ratio: 0.5,
+            open_for: Duration::from_secs(60),
+            max_open: Duration::from_secs(60),
+        },
+    ));
+    let breaker = env.ctx.breakers.get("derechos");
+    for _ in 0..4 {
+        let ticket = breaker.allow().expect("closed");
+        breaker.record(ticket, false, Some("down"));
+    }
+    let cfg = csv_cfg(&env, &pos_rows(2)); // the helper's empty schedule
+    let (log, rad) = (Log::default(), batches());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let normal_runner = fake_runner(&log, &rad);
+    let normal = normal_runner.get("derechos").expect("derechos").clone();
+    let runner = normal_runner.with("derechos", move |ctx, req| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        normal(ctx, req)
+    });
+    let (summary, _) = run_with(&env, &cfg, &runner);
+    assert_eq!(summary.expect("run").finished.done, 2);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "the phase ran for every invoice, as before"
+    );
+}

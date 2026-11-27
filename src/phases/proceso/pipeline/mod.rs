@@ -30,6 +30,10 @@ use super::classify::{Status, Verdict};
 use super::concurrency::PhaseConcurrency;
 use super::events::{Event, Events};
 
+/// Status of the step of an invoice that stopped because a provider is down and
+/// will be retried: neither an error nor a skip.
+pub const WAITING: &str = "WAITING";
+
 /// Consecutive drops without a clear that pause replacement (Go 10).
 pub const DEFAULT_BREAKER: usize = 10;
 
@@ -91,8 +95,9 @@ pub type FireFn<'a> = &'a (dyn Fn(&[String]) -> Fired + Sync);
 pub type SupplyFn<'a> = &'a (dyn Fn(usize) -> Result<Vec<String>> + Sync);
 
 /// Told when an invoice is put to wait for a retry: `(phase, invoice, reason,
-/// delay)`. The caller can record it (`proceso_estado.next_attempt_at`).
-pub type WaitFn<'a> = &'a (dyn Fn(&str, &str, &str, Duration) + Sync);
+/// Some(delay))`, so the caller can record it (`proceso_estado.next_attempt_at`);
+/// and `(phase, invoice, "", None)` when a cancelled run lets it go instead.
+pub type WaitFn<'a> = &'a (dyn Fn(&str, &str, &str, Option<Duration>) + Sync);
 
 pub struct Hooks<'a> {
     pub run: RunFn<'a>,
@@ -451,8 +456,9 @@ impl Run<'_> {
             .phase(spec.name, spec.label)
             .millis(ms);
         step = match &retry {
-            // Not an error yet: the step is "skipped" for the counters.
-            Some((_, why)) => step.status(Status::Skipped.as_str()).reason(why),
+            // Not an error and not a skip: a status of its own, which the
+            // counters leave out until the invoice really ends.
+            Some((_, why)) => step.status(WAITING).reason(why),
             None => step
                 .status(verdict.status.as_str())
                 .reason(&verdict.reason)
@@ -514,7 +520,7 @@ impl Run<'_> {
             "{why}"
         );
         if let Some(waiting) = self.hooks.waiting {
-            waiting(spec.name, invoice, why, delay);
+            waiting(spec.name, invoice, why, Some(delay));
         }
         let mut state = lock(&self.delayed.state);
         state.seq += 1;
@@ -561,6 +567,12 @@ impl Run<'_> {
                         continue;
                     };
                     drop(state);
+                    if self.cancelled()
+                        && let Some(waiting) = self.hooks.waiting
+                    {
+                        // Nobody will retry it: its wait must not linger.
+                        waiting(phase, &invoice, "", None);
+                    }
                     self.send(phase, invoice);
                     state = lock(&self.delayed.state);
                 }

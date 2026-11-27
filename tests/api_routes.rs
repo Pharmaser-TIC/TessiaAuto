@@ -55,7 +55,8 @@ fn providers_report_their_breaker_and_the_invoices_waiting_for_a_retry() {
     // SISPRO keeps failing: its breaker opens and says why and for how long.
     let sispro = h.state.ctx.breakers.get("sispro");
     for _ in 0..8 {
-        sispro.record(false, Some("sispro: no se pudo contactar el login"));
+        let ticket = sispro.allow().expect("closed");
+        sispro.record(ticket, false, Some("sispro: no se pudo contactar el login"));
     }
     // Two invoices wait for a retry in cuv, one in thefactory.
     let soon = chrono::Utc::now() + chrono::Duration::minutes(2);

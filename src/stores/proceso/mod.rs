@@ -374,7 +374,10 @@ impl ProcesoStore {
                     t::num_factura
                         .eq(invoice)
                         .and(t::fase.eq(phase.as_str()))
-                        .and(t::estado.ne(PhaseState::EnProgreso.as_str())),
+                        // Only a row that already failed: a finished result
+                        // (DONE, EXCLUDED, REVISION_MANUAL) is never put back to
+                        // work by a wait, and one being worked on is not ours.
+                        .and(t::estado.eq(failed)),
                 ),
             )
             .set((
@@ -390,8 +393,8 @@ impl ProcesoStore {
             if updated > 0 {
                 return Ok(true);
             }
-            // ... a missing one is created; one in progress is left alone
-            // (the insert finds it and does nothing).
+            // ... a missing one is created; any other row (in progress, done,
+            // manual) is left alone: the insert finds it and does nothing.
             let inserted = diesel::insert_into(t::table)
                 .values((
                     t::num_factura.eq(invoice),
@@ -405,6 +408,29 @@ impl ProcesoStore {
                 .on_conflict_do_nothing()
                 .execute(conn)?;
             Ok(inserted > 0)
+        })
+    }
+
+    /// Forgets the wait of an invoice nobody will retry now (the run that was
+    /// going to was cancelled): the row stays `FAILED`, without a retry time.
+    /// True when a wait was cleared.
+    pub fn clear_retry(&self, phase: Phase, invoice: &str) -> DbResult<bool> {
+        self.pool.run("clear retry", |conn| {
+            let rows = diesel::update(
+                t::table.filter(
+                    t::num_factura
+                        .eq(invoice)
+                        .and(t::fase.eq(phase.as_str()))
+                        .and(t::estado.eq(PhaseState::Failed.as_str()))
+                        .and(t::next_attempt_at.is_not_null()),
+                ),
+            )
+            .set((
+                t::next_attempt_at.eq(None::<DateTime<Utc>>),
+                t::updated_at.eq(diesel::dsl::now),
+            ))
+            .execute(conn)?;
+            Ok(rows > 0)
         })
     }
 

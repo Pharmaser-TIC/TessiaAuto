@@ -933,7 +933,7 @@ fn an_outage_is_retried_from_the_same_phase_after_the_delay_and_then_clears() {
         .collect();
     assert_eq!(
         waiting,
-        ["SKIPPED", "SKIPPED", "OK"],
+        ["WAITING", "WAITING", "OK"],
         "a waiting attempt is not counted as an error"
     );
 }
@@ -1088,11 +1088,13 @@ fn the_waiting_hook_hears_the_phase_the_reason_and_the_delay() {
             Verdict::ok()
         }
     };
-    let waiting = |phase: &str, invoice: &str, reason: &str, delay: Duration| {
-        heard
-            .lock()
-            .expect("heard")
-            .push((phase.into(), invoice.into(), reason.into(), delay));
+    let waiting = |phase: &str, invoice: &str, reason: &str, delay: Option<Duration>| {
+        heard.lock().expect("heard").push((
+            phase.into(),
+            invoice.into(),
+            reason.into(),
+            delay.expect("a scheduled wait"),
+        ));
     };
     let cfg = retrying(config(vec![spec("a", 1, None)], &["i1"]), &[30]);
     let (events, _) = recorder();
@@ -1110,4 +1112,43 @@ fn the_waiting_hook_hears_the_phase_the_reason_and_the_delay() {
     assert_eq!((phase.as_str(), invoice.as_str()), ("a", "i1"));
     assert!(reason.contains("derechos"), "{reason}");
     assert_eq!(*delay, Duration::from_millis(30));
+}
+
+#[test]
+fn a_cancelled_run_tells_the_hook_that_the_waiting_invoice_will_not_be_retried() {
+    let heard: Mutex<Vec<(String, Option<Duration>)>> = Mutex::default();
+    let run = |_: &str, invoice: &str| match invoice {
+        "waits" => outage("thefactory", None),
+        "breaks" => {
+            std::thread::sleep(Duration::from_millis(50));
+            Verdict {
+                error: Some("boom".into()),
+                ..Verdict::new(Status::Failed, "")
+            }
+        }
+        _ => Verdict::ok(),
+    };
+    let waiting = |_: &str, invoice: &str, _: &str, delay: Option<Duration>| {
+        heard.lock().expect("heard").push((invoice.into(), delay));
+    };
+    let cfg = retrying(
+        config(vec![spec("a", 2, None)], &["waits", "breaks"]),
+        &[5_000],
+    );
+    let (events, _) = recorder();
+    let hooks = Hooks {
+        run: &run,
+        fire: None,
+        supply: None,
+        waiting: Some(&waiting),
+    };
+    run_pipeline(&cfg, &hooks, &events);
+    let heard = heard.lock().expect("heard");
+    assert_eq!(heard.len(), 2, "{heard:?}");
+    assert!(heard[0].1.is_some(), "first it was put to wait");
+    assert_eq!(
+        heard[1],
+        ("waits".to_owned(), None),
+        "then the cancel let it go"
+    );
 }

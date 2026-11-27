@@ -426,17 +426,14 @@ fn a_retry_is_stored_as_a_failed_row_with_its_time_and_cleared_by_the_next_claim
     let row = store.load(Phase::Cuv, None).expect("load")["FEV000"].clone();
     assert_eq!((row.state, row.next_attempt_at), (PhaseState::Done, None));
 
-    // A finished row can be put to wait again (a later retry of the same invoice).
+    // A finished row is not put back to work by a wait (see the dedicated test).
     assert!(
-        store
+        !store
             .schedule_retry(Phase::Cuv, "FEV000", Some("C1"), "again", at)
             .expect("schedule")
     );
     let row = store.load(Phase::Cuv, None).expect("load")["FEV000"].clone();
-    assert_eq!(
-        (row.state, row.next_attempt_at.is_some()),
-        (PhaseState::Failed, true)
-    );
+    assert_eq!((row.state, row.next_attempt_at), (PhaseState::Done, None));
 }
 
 #[test]
@@ -477,4 +474,83 @@ fn waiting_invoices_are_listed_by_phase_with_their_next_retry() {
         soon.timestamp(),
         "the earliest one"
     );
+}
+
+#[test]
+fn a_wait_never_puts_a_finished_result_back_to_failed() {
+    let db = TestDb::new();
+    let store = ProcesoStore::new(db.pool());
+    let at = Utc::now() + chrono::Duration::minutes(5);
+    store
+        .save(&save_row("FEV001", Phase::Cuv, Outcome::done(), 1))
+        .expect("save");
+    store
+        .save(&save_row(
+            "FEV002",
+            Phase::Cuv,
+            Outcome::manual_review("X"),
+            1,
+        ))
+        .expect("save");
+    store
+        .save(&save_row("FEV003", Phase::Cuv, Outcome::excluded("Y"), 1))
+        .expect("save");
+
+    for invoice in ["FEV001", "FEV002", "FEV003"] {
+        assert!(
+            !store
+                .schedule_retry(
+                    Phase::Cuv,
+                    invoice,
+                    Some("C1"),
+                    "TERCERO_NO_DISPONIBLE: x",
+                    at
+                )
+                .expect("schedule"),
+            "{invoice}"
+        );
+    }
+    let rows = store.load(Phase::Cuv, None).expect("load");
+    assert_eq!(
+        [
+            rows["FEV001"].state,
+            rows["FEV002"].state,
+            rows["FEV003"].state
+        ],
+        [
+            PhaseState::Done,
+            PhaseState::RevisionManual,
+            PhaseState::Excluded
+        ]
+    );
+    assert!(rows.values().all(|r| r.next_attempt_at.is_none()));
+    assert!(store.waiting().expect("waiting").is_empty());
+}
+
+#[test]
+fn a_cleared_wait_stays_failed_and_is_no_longer_listed() {
+    let db = TestDb::new();
+    let store = ProcesoStore::new(db.pool());
+    let at = Utc::now() + chrono::Duration::minutes(5);
+    store
+        .schedule_retry(
+            Phase::Cuv,
+            "FEV001",
+            Some("C1"),
+            "TERCERO_NO_DISPONIBLE: x",
+            at,
+        )
+        .expect("schedule");
+    assert_eq!(store.waiting().expect("waiting").len(), 1);
+
+    assert!(store.clear_retry(Phase::Cuv, "FEV001").expect("clear"));
+    let row = store.load(Phase::Cuv, None).expect("load")["FEV001"].clone();
+    assert_eq!((row.state, row.next_attempt_at), (PhaseState::Failed, None));
+    assert!(store.waiting().expect("waiting").is_empty());
+    // Nothing left to clear; and it never touches a row that is not failed.
+    assert!(!store.clear_retry(Phase::Cuv, "FEV001").expect("clear"));
+    store
+        .save(&save_row("FEV002", Phase::Cuv, Outcome::done(), 1))
+        .expect("save");
+    assert!(!store.clear_retry(Phase::Cuv, "FEV002").expect("clear"));
 }
