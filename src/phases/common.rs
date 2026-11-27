@@ -19,6 +19,22 @@ use crate::domain::Outcome;
 #[cfg(any(test, feature = "test-support"))]
 use crate::domain::PhaseState;
 
+/// Code that opens the reason of an invoice a phase could not finish because a
+/// third party (or the network) is down: the same invoice may well work later.
+/// It is what lets `proceso run` tell an outage from a fault of the invoice
+/// when the phase recorded a FAILED result instead of returning an error.
+pub const OUTAGE_CODE: &str = "TERCERO_NO_DISPONIBLE";
+
+/// `reason` marked as an outage (`TERCERO_NO_DISPONIBLE: <reason>`).
+pub fn outage_reason(reason: &str) -> String {
+    format!("{OUTAGE_CODE}: {reason}")
+}
+
+/// True when a stored reason was marked with [`outage_reason`].
+pub fn is_outage_reason(motivo: &str) -> bool {
+    motivo.starts_with(OUTAGE_CODE)
+}
+
 /// What the orchestrator asks of a phase.
 #[derive(Debug, Clone, Default)]
 pub struct PhaseRequest {

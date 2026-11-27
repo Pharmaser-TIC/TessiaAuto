@@ -9,6 +9,7 @@ import type {
   Hallazgo,
   HallazgosResponse,
   HealthResponse,
+  ProveedoresResponse,
   InvoiceTracking,
   JobSnapshot,
   JobsHistory,
@@ -48,6 +49,8 @@ function radicadasPath(q: RadicadasQuery, csv: boolean): string {
 export function createTessiaApi(client: ApiClient) {
   return {
     health: () => client.getJSON<HealthResponse>("/api/health"),
+    /** Circuit breaker of each third party and the invoices waiting for a retry. */
+    proveedores: () => client.getJSON<ProveedoresResponse>("/api/proveedores"),
 
     cargues: () => client.getJSON<Cargue[]>("/api/cargues"),
     informe: (id: string) => client.getJSON<ManualReviewReport>(`/api/cargues/${enc(id)}/informe`),

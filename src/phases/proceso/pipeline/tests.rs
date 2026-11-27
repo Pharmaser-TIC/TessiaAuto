@@ -53,6 +53,7 @@ fn config(phases: Vec<PhaseSpec>, invoices: &[&str]) -> PipelineConfig {
         target: 0,
         replace_cap: 0,
         breaker: 0,
+        retry_schedule: Vec::new(),
     }
 }
 
@@ -83,7 +84,12 @@ fn go(
     supply: Option<SupplyFn<'_>>,
 ) -> (Finished, Arc<Mutex<Vec<Event>>>) {
     let (events, seen) = recorder();
-    let hooks = Hooks { run, fire, supply };
+    let hooks = Hooks {
+        run,
+        fire,
+        supply,
+        waiting: None,
+    };
     (run_pipeline(cfg, &hooks, &events), seen)
 }
 
@@ -859,4 +865,290 @@ fn replacement_off_without_a_target_or_a_supplier() {
     assert!(pool.calls().is_empty());
     let end = run_end(&seen);
     assert_eq!((end.total, end.replaced, finished.manual), (0, 0, 1));
+}
+
+// ------------------------------------------------------------ scheduled retry
+
+use super::super::classify::Outage;
+
+fn outage(provider: &'static str, wait: Option<Duration>) -> Verdict {
+    Verdict {
+        error: Some(format!("{provider} no responde")),
+        resumable: true,
+        outage: Some(Outage { provider, wait }),
+        ..Verdict::new(Status::Failed, "")
+    }
+}
+
+fn retrying(mut cfg: PipelineConfig, schedule: &[u64]) -> PipelineConfig {
+    cfg.retry_schedule = schedule
+        .iter()
+        .map(|ms| Duration::from_millis(*ms))
+        .collect();
+    cfg
+}
+
+#[test]
+fn an_outage_is_retried_from_the_same_phase_after_the_delay_and_then_clears() {
+    let attempts = AtomicUsize::new(0);
+    let b_runs = AtomicUsize::new(0);
+    let run = |phase: &str, _: &str| match phase {
+        "a" if attempts.fetch_add(1, Ordering::SeqCst) < 2 => outage("thefactory", None),
+        "b" => {
+            b_runs.fetch_add(1, Ordering::SeqCst);
+            Verdict::ok()
+        }
+        _ => Verdict::ok(),
+    };
+    let cfg = retrying(
+        config(vec![spec("a", 1, Some("b")), spec("b", 1, None)], &["i1"]),
+        &[20, 20],
+    );
+    let (finished, seen) = go(&cfg, &run, None, None);
+
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        3,
+        "two outages, then it works"
+    );
+    assert_eq!(
+        b_runs.load(Ordering::SeqCst),
+        1,
+        "it continued to the next phase"
+    );
+    assert_eq!((finished.done, finished.failed), (1, 0));
+    assert_eq!(
+        finished.error, None,
+        "an outage that cleared is not an error"
+    );
+    assert_eq!(finished.worst, Status::Ok);
+
+    let retries = of_type(&seen, "invoice_retry");
+    assert_eq!(retries.len(), 2);
+    assert!(retries.iter().all(|e| e.invoice == "i1" && e.phase == "a"));
+    let waiting: Vec<_> = of_type(&seen, "invoice_step")
+        .into_iter()
+        .filter(|e| e.phase == "a")
+        .map(|e| e.status)
+        .collect();
+    assert_eq!(
+        waiting,
+        ["WAITING", "WAITING", "OK"],
+        "a waiting attempt is not counted as an error"
+    );
+}
+
+#[test]
+fn a_waiting_invoice_does_not_hold_back_the_others_but_the_run_waits_for_it() {
+    let down = AtomicUsize::new(0);
+    let order: Mutex<Vec<String>> = Mutex::default();
+    let run = |_: &str, invoice: &str| {
+        if invoice == "late" && down.fetch_add(1, Ordering::SeqCst) == 0 {
+            return outage("sispro", None);
+        }
+        order.lock().expect("order").push(invoice.to_owned());
+        Verdict::ok()
+    };
+    let cfg = retrying(config(vec![spec("a", 2, None)], &["late", "fast"]), &[150]);
+    let started = std::time::Instant::now();
+    let (finished, _) = go(&cfg, &run, None, None);
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(150),
+        "it waited for the retry"
+    );
+    assert_eq!(*order.lock().expect("order"), ["fast", "late"]);
+    assert_eq!((finished.done, finished.failed), (2, 0));
+}
+
+#[test]
+fn once_the_schedule_is_spent_the_invoice_fails_but_the_run_goes_on() {
+    let a_runs = AtomicUsize::new(0);
+    let run = |_: &str, invoice: &str| {
+        if invoice == "down" {
+            a_runs.fetch_add(1, Ordering::SeqCst);
+            outage("cassandra", None)
+        } else {
+            Verdict::ok()
+        }
+    };
+    let cfg = retrying(
+        config(vec![spec("a", 2, None)], &["down", "fine"]),
+        &[10, 10],
+    );
+    let (finished, seen) = go(&cfg, &run, None, None);
+
+    assert_eq!(
+        a_runs.load(Ordering::SeqCst),
+        3,
+        "the first try and two retries"
+    );
+    assert_eq!((finished.done, finished.failed), (1, 1));
+    assert_eq!(finished.worst, Status::Failed);
+    assert!(
+        finished
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("cassandra no responde")),
+        "the outage is still reported: {finished:?}"
+    );
+    assert_eq!(of_type(&seen, "invoice_retry").len(), 2);
+    let last = of_type(&seen, "invoice_step")
+        .into_iter()
+        .rfind(|e| e.invoice == "down")
+        .expect("step");
+    assert_eq!(last.status, "FAILED", "only the last attempt is an error");
+}
+
+#[test]
+fn without_a_schedule_an_outage_fails_at_once_as_before() {
+    let runs = AtomicUsize::new(0);
+    let run = |_: &str, _: &str| {
+        runs.fetch_add(1, Ordering::SeqCst);
+        outage("thefactory", None)
+    };
+    let cfg = config(vec![spec("a", 1, None)], &["i1"]);
+    let (finished, seen) = go(&cfg, &run, None, None);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    assert_eq!(finished.failed, 1);
+    assert!(of_type(&seen, "invoice_retry").is_empty());
+}
+
+#[test]
+fn an_open_breaker_can_ask_for_a_longer_wait_than_the_schedule() {
+    let runs = AtomicUsize::new(0);
+    let at: Mutex<Vec<std::time::Instant>> = Mutex::default();
+    let run = |_: &str, _: &str| {
+        at.lock().expect("at").push(std::time::Instant::now());
+        if runs.fetch_add(1, Ordering::SeqCst) == 0 {
+            outage("sispro", Some(Duration::from_millis(200)))
+        } else {
+            Verdict::ok()
+        }
+    };
+    let cfg = retrying(config(vec![spec("a", 1, None)], &["i1"]), &[10]);
+    let (finished, _) = go(&cfg, &run, None, None);
+    let at = at.lock().expect("at");
+    assert_eq!(finished.done, 1);
+    assert!(
+        at[1] - at[0] >= Duration::from_millis(200),
+        "{:?}",
+        at[1] - at[0]
+    );
+}
+
+#[test]
+fn an_abort_drops_the_invoices_that_were_waiting() {
+    let runs = AtomicUsize::new(0);
+    let run = |_: &str, invoice: &str| match invoice {
+        "waits" => {
+            runs.fetch_add(1, Ordering::SeqCst);
+            outage("thefactory", None)
+        }
+        // A systemic, non-resumable failure aborts the run.
+        "breaks" => {
+            std::thread::sleep(Duration::from_millis(50));
+            Verdict {
+                error: Some("boom".into()),
+                ..Verdict::new(Status::Failed, "")
+            }
+        }
+        _ => Verdict::ok(),
+    };
+    let cfg = retrying(
+        config(vec![spec("a", 2, None)], &["waits", "breaks"]),
+        &[5_000],
+    );
+    let started = std::time::Instant::now();
+    let (finished, _) = go(&cfg, &run, None, None);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "never retried after the abort"
+    );
+    assert_eq!(
+        finished.error.as_deref().map(|e| e.contains("boom")),
+        Some(true)
+    );
+}
+
+#[test]
+fn the_waiting_hook_hears_the_phase_the_reason_and_the_delay() {
+    let heard: Mutex<Vec<(String, String, String, Duration)>> = Mutex::default();
+    let runs = AtomicUsize::new(0);
+    let run = |_: &str, _: &str| {
+        if runs.fetch_add(1, Ordering::SeqCst) == 0 {
+            outage("derechos", None)
+        } else {
+            Verdict::ok()
+        }
+    };
+    let waiting = |phase: &str, invoice: &str, reason: &str, delay: Option<Duration>| {
+        heard.lock().expect("heard").push((
+            phase.into(),
+            invoice.into(),
+            reason.into(),
+            delay.expect("a scheduled wait"),
+        ));
+    };
+    let cfg = retrying(config(vec![spec("a", 1, None)], &["i1"]), &[30]);
+    let (events, _) = recorder();
+    let hooks = Hooks {
+        run: &run,
+        fire: None,
+        supply: None,
+        waiting: Some(&waiting),
+    };
+    let finished = run_pipeline(&cfg, &hooks, &events);
+    assert_eq!(finished.done, 1);
+    let heard = heard.lock().expect("heard");
+    assert_eq!(heard.len(), 1);
+    let (phase, invoice, reason, delay) = &heard[0];
+    assert_eq!((phase.as_str(), invoice.as_str()), ("a", "i1"));
+    assert!(reason.contains("derechos"), "{reason}");
+    assert_eq!(*delay, Duration::from_millis(30));
+}
+
+#[test]
+fn a_cancelled_run_tells_the_hook_that_the_waiting_invoice_will_not_be_retried() {
+    let heard: Mutex<Vec<(String, Option<Duration>)>> = Mutex::default();
+    let run = |_: &str, invoice: &str| match invoice {
+        "waits" => outage("thefactory", None),
+        "breaks" => {
+            std::thread::sleep(Duration::from_millis(50));
+            Verdict {
+                error: Some("boom".into()),
+                ..Verdict::new(Status::Failed, "")
+            }
+        }
+        _ => Verdict::ok(),
+    };
+    let waiting = |_: &str, invoice: &str, _: &str, delay: Option<Duration>| {
+        heard.lock().expect("heard").push((invoice.into(), delay));
+    };
+    let cfg = retrying(
+        config(vec![spec("a", 2, None)], &["waits", "breaks"]),
+        &[5_000],
+    );
+    let (events, _) = recorder();
+    let hooks = Hooks {
+        run: &run,
+        fire: None,
+        supply: None,
+        waiting: Some(&waiting),
+    };
+    run_pipeline(&cfg, &hooks, &events);
+    let heard = heard.lock().expect("heard");
+    assert_eq!(heard.len(), 2, "{heard:?}");
+    assert!(heard[0].1.is_some(), "first it was put to wait");
+    assert_eq!(
+        heard[1],
+        ("waits".to_owned(), None),
+        "then the cancel let it go"
+    );
 }

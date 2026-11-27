@@ -33,6 +33,8 @@ pub(crate) struct Processed {
     pub line: String,
     /// XML, PDF and ZIP are all present.
     pub complete: bool,
+    /// The invoice is incomplete because the provider or the network is down.
+    pub outage: bool,
     /// `CPSCAN sin soporte (...)` / `CPSCAN pendiente (...): ...` or `""`.
     pub warning: String,
 }
@@ -60,7 +62,7 @@ pub(crate) fn process(env: &Env<'_>, plan: &Plan) -> Result<Processed> {
         });
         (downloaded, cpscan)
     });
-    let (mut line, complete) = downloaded?;
+    let (mut line, complete, outage) = downloaded?;
     let mut warning = String::new();
     if let Some((part, note)) = cpscan {
         line.push(' ');
@@ -70,6 +72,7 @@ pub(crate) fn process(env: &Env<'_>, plan: &Plan) -> Result<Processed> {
     Ok(Processed {
         line,
         complete,
+        outage,
         warning,
     })
 }
@@ -80,6 +83,8 @@ struct Part {
     data: Option<Vec<u8>>,
     status: String,
     detail: Option<String>,
+    /// The download failed because the provider is down (see `FetchResult`).
+    outage: bool,
 }
 
 /// Reads the existing artifact or downloads and checks the document.
@@ -96,6 +101,7 @@ fn fetch_or_read(
             data: Some(env.artifacts.fetch_bytes(env.cargue_id, rel)?),
             status: "YA_EXISTE".into(),
             detail: None,
+            outage: false,
         });
     }
     let result = env.client.fetch(kind, invoice)?;
@@ -104,6 +110,7 @@ fn fetch_or_read(
             data: None,
             status: result.status.as_str().into(),
             detail: Some(result.detail),
+            outage: result.outage,
         });
     }
     match check(&result.data) {
@@ -111,6 +118,7 @@ fn fetch_or_read(
             data: Some(data),
             status: Status::Downloaded.as_str().into(),
             detail: None,
+            outage: false,
         }),
         Err(message) => Ok(Part {
             data: None,
@@ -119,6 +127,7 @@ fn fetch_or_read(
                 Kind::Xml => Status::Failed.as_str().into(),
             },
             detail: Some(message),
+            outage: false,
         }),
     }
 }
@@ -155,8 +164,9 @@ fn put(env: &Env<'_>, workdir: &Workdir, rel: &str, data: &[u8]) -> Result<()> {
 }
 
 /// Mirrors `DescargarXML` + `DescargarPDF` + the XML/PDF ZIP for one invoice.
-/// Returns the report line and whether the three files are present afterwards.
-fn download_invoice(env: &Env<'_>, workdir: &Workdir, plan: &Plan) -> Result<(String, bool)> {
+/// Returns the report line, whether the three files are present afterwards and
+/// whether what is missing is because the provider is down.
+fn download_invoice(env: &Env<'_>, workdir: &Workdir, plan: &Plan) -> Result<(String, bool, bool)> {
     let inv = plan.invoice.as_str();
     let (xml_rel, pdf_rel) = (format!("{inv}.xml"), format!("{inv}.pdf"));
     let xml = fetch_or_read(env, Kind::Xml, inv, &xml_rel, plan.has_xml, check_xml)?;
@@ -210,7 +220,7 @@ fn download_invoice(env: &Env<'_>, workdir: &Workdir, plan: &Plan) -> Result<(St
     if complete {
         persist_xml_value(env, inv, xml.data.as_deref(), zip_len);
     }
-    Ok((line, complete))
+    Ok((line, complete, !complete && (xml.outage || pdf.outage)))
 }
 
 fn zip_rel(invoice: &str) -> String {

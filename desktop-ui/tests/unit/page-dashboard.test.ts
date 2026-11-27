@@ -13,6 +13,7 @@ async function mountPage() {
   const routed = routedApi({
     "GET /api/health": [{ nombre: "PostgreSQL", disponible: true, latencia_ms: 2 }],
     "GET /api/nota-tecnica": { exists: false },
+    "GET /api/proveedores": { proveedores: [], en_espera: [] },
     "GET /api/cargues": [],
     "GET /api/jobs/current": IDLE_JOB,
     [CONSULTA]: fakeConsulta([]),
@@ -42,6 +43,12 @@ describe("<tx-page-dashboard>", () => {
     for (const tag of ["tx-health-cards", "tx-nuevo-cargue", "tx-proceso-panel", "tx-consola-proceso"]) expect(q(el, tag), tag).not.toBeNull();
     expect(q(el, "tx-consola-proceso")!.hasAttribute("default-open")).toBe(true);
     expect(q(el, "rips-dashboard")).toBeNull();
+  });
+
+  it("mounts the third-party card on Operar next to the health cards", async () => {
+    const { el, callsTo } = await mountPage();
+    expect(q(el, "tx-proveedores-estado")).not.toBeNull();
+    expect(callsTo("GET", "/api/proveedores").length).toBeGreaterThan(0);
   });
 
   it("ignores tx-change events bubbling from controls inside a tab (picking another cargue keeps Operar)", async () => {

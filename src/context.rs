@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 
 use crate::config::Settings;
 use crate::db::{DbPool, migrate};
-use crate::http::Limiters;
+use crate::http::{Breakers, Limiters};
 use crate::nt::{NtCatalog, RedisNt};
 use crate::storage::{Artifacts, CassandraStore, ObjectStore, Workdir};
 use crate::stores::artefactos::ArtefactosStore;
@@ -51,6 +51,8 @@ pub struct AppContext {
     pub owner: String,
     /// Process-wide AIMD limiters per external system.
     pub limiters: Arc<Limiters>,
+    /// Process-wide circuit breakers per provider (see `http::breaker`).
+    pub breakers: Arc<Breakers>,
     /// Keeps a test workdir root alive (removed when the last clone drops).
     _temp_root: Option<Arc<TempRoot>>,
 }
@@ -105,6 +107,7 @@ impl AppContext {
             workdir_root,
             owner: new_owner(),
             limiters: Arc::new(Limiters::new()),
+            breakers: Arc::new(Breakers::new()),
             _temp_root: None,
         })
     }
@@ -126,6 +129,7 @@ impl AppContext {
             workdir_root: root.clone(),
             owner: new_owner(),
             limiters: Arc::new(Limiters::new()),
+            breakers: Arc::new(Breakers::new()),
             _temp_root: Some(Arc::new(TempRoot(root))),
         }
     }

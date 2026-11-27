@@ -3,6 +3,7 @@ import "../components/health-cards";
 import "../components/consola-proceso";
 import "../components/nuevo-cargue";
 import "../components/proceso-panel";
+import "../components/proveedores-estado";
 import "../components/rips/rips-dashboard";
 import "../components/tx-tabs";
 
@@ -62,6 +63,7 @@ export class TxPageDashboard extends LitElement {
       <div slot="operate">
         ${this.tab === "operate"
           ? html`<tx-health-cards></tx-health-cards>
+              <tx-proveedores-estado></tx-proveedores-estado>
               <div class="operate">
                 <tx-nuevo-cargue></tx-nuevo-cargue>
                 <tx-proceso-panel></tx-proceso-panel>

@@ -19,11 +19,13 @@
 //! # Ok(()) }
 //! ```
 
+pub mod breaker;
 pub mod client;
 pub mod limiter;
 pub mod retry;
 pub mod token;
 
+pub use breaker::{BreakerConfig, BreakerSnapshot, BreakerState, Breakers, CircuitBreaker, Ticket};
 pub use client::{ClientOptions, build_client, safe_url};
 pub use limiter::{
     AdaptiveLimiter, LimiterOptions, LimiterSpec, Limiters, Permit, response_healthy,

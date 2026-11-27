@@ -300,6 +300,38 @@ export interface ServiceHealth {
 /** GET /api/health */
 export type HealthResponse = ServiceHealth[];
 
+// --- Proveedores (terceros) --------------------------------------------------
+
+/** One provider of GET /api/proveedores, as its circuit breaker sees it (per process). */
+export interface Proveedor {
+  /** `cassandra`, `thefactory`, `derechos`, `sispro` or `medicar`. */
+  nombre: string;
+  etiqueta: string;
+  estado: "cerrado" | "abierto" | "semiabierto";
+  /** Recent outcomes remembered (or the ones that opened it) and how many failed. */
+  llamadas: number;
+  fallas: number;
+  ultimo_error?: string;
+  /** While open: seconds until the next probe. */
+  reintento_en_s?: number;
+  aperturas: number;
+}
+
+/** Invoices waiting for a retry in one phase (from the database, so other machines' too). */
+export interface EnEspera {
+  /** Phase key (`thefactory`, `derechos`, `cuv`, ...). */
+  fase: string;
+  facturas: number;
+  /** Earliest retry of the phase, RFC 3339 UTC. */
+  proximo_reintento: string;
+}
+
+/** GET /api/proveedores */
+export interface ProveedoresResponse {
+  proveedores: Proveedor[];
+  en_espera: EnEspera[];
+}
+
 // --- Nota técnica ------------------------------------------------------------
 
 /**

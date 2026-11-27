@@ -17,12 +17,14 @@
 //!   reported none, the state read back from `proceso_estado`) decides; an
 //!   invoice another machine owns is `SKIPPED`, not a failure.
 
+use std::time::Duration;
+
 use anyhow::Error;
 
 use crate::db::DbError;
 use crate::domain::PhaseState;
 use crate::http::HttpError;
-use crate::phases::common::PhaseReport;
+use crate::phases::common::{PhaseReport, is_outage_reason};
 use crate::phases::conciliar::plan::Incomplete;
 use crate::phases::cuv::MissingRipsJsonError;
 use crate::phases::derechos::DerechosError;
@@ -65,6 +67,31 @@ impl Status {
     }
 }
 
+/// The invoice stopped because this provider (or the network towards it) is
+/// down; the same invoice is worth trying again later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outage {
+    /// `cassandra` (storage), `thefactory`, `derechos`, `sispro` or `medicar`.
+    pub provider: &'static str,
+    /// How long to wait at least (an open breaker knows; `None` = the
+    /// pipeline's own schedule).
+    pub wait: Option<Duration>,
+}
+
+/// The provider a phase talks to besides storage, if any.
+pub fn provider_of(phase: &str) -> Option<&'static str> {
+    match phase {
+        "thefactory" => Some("thefactory"),
+        "derechos" => Some("derechos"),
+        "cuv" => Some("sispro"),
+        "conciliar" => Some("medicar"),
+        _ => None,
+    }
+}
+
+/// The storage provider: every phase reads and writes artifacts.
+pub const STORAGE_PROVIDER: &str = "cassandra";
+
 /// What a phase reported for one invoice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
@@ -82,6 +109,8 @@ pub struct Verdict {
     pub resumable: bool,
     /// A transient database conflict was seen: the phase's concurrency halves.
     pub conflict: bool,
+    /// A provider outage stopped the invoice (see [`Outage`]).
+    pub outage: Option<Outage>,
 }
 
 impl Verdict {
@@ -94,6 +123,7 @@ impl Verdict {
             fatal: false,
             resumable: false,
             conflict: false,
+            outage: None,
         }
     }
 
@@ -109,19 +139,26 @@ impl Verdict {
     }
 }
 
-/// True when the chain holds an outage of a third party or of the network
-/// (a transport failure that survived the retries, or a storage service that
-/// is unreachable / answering 5xx): retrying the invoice later can cure it.
-pub fn is_third_party_outage(err: &Error) -> bool {
-    err.chain().any(|cause| {
+/// The provider that is down when the chain holds an outage: storage reports
+/// itself; a transport failure belongs to the provider of the phase (storage
+/// when the phase has none).
+fn outage_provider(phase: &str, err: &Error) -> Option<&'static str> {
+    if err.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<StorageError>(),
             Some(StorageError::Unavailable(_))
-        ) || matches!(
-            cause.downcast_ref::<HttpError>(),
-            Some(HttpError::Transport { .. })
         )
-    })
+    }) {
+        return Some(STORAGE_PROVIDER);
+    }
+    err.chain()
+        .any(|cause| {
+            matches!(
+                cause.downcast_ref::<HttpError>(),
+                Some(HttpError::Transport { .. })
+            )
+        })
+        .then(|| provider_of(phase).unwrap_or(STORAGE_PROVIDER))
 }
 
 /// True when the chain holds a database error that a retry could cure but
@@ -171,6 +208,10 @@ fn classify_error(phase: &str, invoice: &str, err: &Error) -> Verdict {
         return Verdict {
             error: Some(format!("{err:#}")),
             resumable: true,
+            outage: Some(Outage {
+                provider: "derechos",
+                wait: None,
+            }),
             ..Verdict::new(Status::Failed, THIRD_PARTY_OUTAGE)
         };
     }
@@ -180,12 +221,16 @@ fn classify_error(phase: &str, invoice: &str, err: &Error) -> Verdict {
             ..Verdict::new(Status::Failed, STORE_UNAVAILABLE)
         };
     }
-    if is_third_party_outage(err) {
+    if let Some(provider) = outage_provider(phase, err) {
         // The provider or the network is down, not this invoice: it stays
         // for the next run and the others go on. The error is still reported.
         return Verdict {
             error: Some(format!("{err:#}")),
             resumable: true,
+            outage: Some(Outage {
+                provider,
+                wait: None,
+            }),
             ..Verdict::new(Status::Failed, THIRD_PARTY_OUTAGE)
         };
     }
@@ -196,6 +241,10 @@ fn classify_error(phase: &str, invoice: &str, err: &Error) -> Verdict {
             return Verdict {
                 error: Some(format!("{err:#}")),
                 resumable: incomplete.only_medicar_unavailable(),
+                outage: incomplete.only_medicar_unavailable().then_some(Outage {
+                    provider: "medicar",
+                    wait: None,
+                }),
                 ..Verdict::new(Status::Failed, "")
             };
         }
@@ -212,6 +261,15 @@ fn classify_report(
 ) -> Verdict {
     if let Some(done) = report.outcomes.iter().find(|o| o.invoice == invoice) {
         let (state, motivo) = (done.outcome.state, done.outcome.motivo.as_str());
+        if state == PhaseState::Failed && is_outage_reason(motivo) {
+            return Verdict {
+                outage: Some(Outage {
+                    provider: provider_of(phase).unwrap_or(STORAGE_PROVIDER),
+                    wait: None,
+                }),
+                ..state_verdict(state)
+            };
+        }
         return if phase == "fev" {
             fev_verdict(state, motivo)
         } else {
@@ -459,6 +517,65 @@ mod tests {
         ));
         let v = classify("thefactory", "F1", Err(denied), &none);
         assert!(!v.resumable && v.error.is_some());
+    }
+
+    #[test]
+    fn an_outage_names_the_provider_that_is_down() {
+        // Storage, whatever phase was using it.
+        let storage = anyhow::Error::new(crate::storage::StorageError::Unavailable("x".into()));
+        let v = classify("rips", "A1", Err(storage), &none);
+        assert_eq!(v.outage.as_ref().map(|o| o.provider), Some("cassandra"));
+        // A transport failure belongs to the provider of the phase.
+        let transport = || {
+            let err = reqwest::blocking::get("http://127.0.0.1:9/").expect_err("closed port");
+            anyhow::Error::new(crate::http::HttpError::Transport {
+                method: "GET".into(),
+                url: "http://127.0.0.1:9/".into(),
+                attempts: 1,
+                source: err.without_url(),
+            })
+        };
+        for (phase, provider) in [
+            ("thefactory", "thefactory"),
+            ("cuv", "sispro"),
+            ("conciliar", "medicar"),
+        ] {
+            let v = classify(phase, "A1", Err(transport()), &none);
+            assert_eq!(
+                v.outage.as_ref().map(|o| o.provider),
+                Some(provider),
+                "{phase}"
+            );
+            assert!(v.resumable && !v.fatal, "{phase}");
+        }
+        // The derechos validator.
+        let unreachable = anyhow::Error::new(DerechosError::ValidatorUnreachable {
+            untouched: 1,
+            detail: "x".into(),
+        });
+        let v = classify("derechos", "A1", Err(unreachable), &none);
+        assert_eq!(v.outage.as_ref().map(|o| o.provider), Some("derechos"));
+        // A rejection is not an outage.
+        let denied = anyhow::Error::new(crate::storage::StorageError::Failed("403".into()));
+        assert!(classify("rips", "A1", Err(denied), &none).outage.is_none());
+    }
+
+    #[test]
+    fn a_stored_failure_marked_as_an_outage_is_one_and_an_unmarked_one_is_not() {
+        let marked = report(
+            "A1",
+            Outcome::failed(crate::phases::common::outage_reason("sispro: no responde")),
+        );
+        let v = classify("cuv", "A1", Ok(marked), &none);
+        assert_eq!(v.status, Status::Failed);
+        assert_eq!(v.outage.as_ref().map(|o| o.provider), Some("sispro"));
+        assert!(
+            v.error.is_none(),
+            "an invoice failure, not a systemic error"
+        );
+
+        let plain = report("A1", Outcome::failed("XML_FALTA (no esta en el zip)"));
+        assert!(classify("cuv", "A1", Ok(plain), &none).outage.is_none());
     }
 
     #[test]

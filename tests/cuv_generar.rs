@@ -432,7 +432,13 @@ fn every_sispro_response_class_ends_in_the_right_file_and_state() {
         String::from_utf8(fetch(&ctx, "FVS107_RESPUESTA_NO_CORRESPONDE.txt")).expect("utf8");
     assert!(diagnostic.starts_with("Respuesta no corresponde a la factura local.\nFactura local: FVS107\nFactura respuesta Ministerio: OTRA9\nRespuesta:\n{"));
     // Server errors are retried later; other statuses and Java's NPE cases write nothing.
-    expect("FVS108", Outcome::failed("HTTP 500 Error general"), &[]);
+    // A 5xx is an outage of SISPRO: the reason carries the marker that lets
+    // `proceso run` retry it later; an unreadable 2xx/4xx answer does not.
+    expect(
+        "FVS108",
+        Outcome::failed("TERCERO_NO_DISPONIBLE: HTTP 500 Error general"),
+        &[],
+    );
     expect(
         "FVS109",
         Outcome::manual_review("HTTP 404 Error general"),
@@ -455,6 +461,78 @@ fn every_sispro_response_class_ends_in_the_right_file_and_state() {
     );
     // CargarFevRips is sent once per invoice, whatever the answer.
     assert_eq!(fake.count(CARGAR), cases.len());
+}
+
+#[test]
+fn an_unreachable_sispro_is_stored_as_an_outage_not_as_a_fault_of_the_invoice() {
+    let db = TestDb::new();
+    let (regimen, contrato, input, _) = xml_case("contributivo");
+    // Nothing listens on this port: the network is down, the credentials were
+    // never judged.
+    let ctx = context(&db, "http://127.0.0.1:9", &contrato);
+    seed(&ctx, "FVS1", &regimen, Some(&input));
+
+    let tally = TokenTally::new();
+    let report = run_phase_tallied(&ctx, &request(None), &tally).expect("tallied run");
+
+    let (state, motivo) = stored(&ctx, "FVS1");
+    assert_eq!(state, PhaseState::Failed);
+    assert!(
+        motivo.starts_with(
+            "TERCERO_NO_DISPONIBLE: Error: Token vacío (sispro: no se pudo contactar el login"
+        ),
+        "{motivo}"
+    );
+    // The login alert still counts it, as before.
+    assert_eq!(tally.snapshot().token_failed, 1);
+    // And `proceso run` reads the marker: the invoice is an outage of SISPRO.
+    let verdict = tessia::phases::proceso::classify::classify("cuv", "FVS1", Ok(report), &|| None);
+    assert_eq!(
+        verdict.outage.as_ref().map(|o| o.provider),
+        Some("sispro"),
+        "{verdict:?}"
+    );
+}
+
+#[test]
+fn an_invoice_sent_with_an_unknown_outcome_is_safe_to_send_again() {
+    // First run: SISPRO answers 503, we cannot know whether it kept the
+    // invoice. The invoice is left as an outage, not as a rejection.
+    let db = TestDb::new();
+    let (regimen, contrato, input, _) = xml_case("contributivo");
+    let down = FakeSispro::start(answers(&[("FVS103", 503, "{}".to_owned())]));
+    let ctx = context(&db, down.url(), &contrato);
+    seed(&ctx, "FVS103", &regimen, Some(&input));
+
+    run_phase(&ctx, &request(None)).expect("first run");
+    let (state, motivo) = stored(&ctx, "FVS103");
+    assert_eq!(state, PhaseState::Failed);
+    assert!(
+        motivo.starts_with("TERCERO_NO_DISPONIBLE: HTTP 503"),
+        "{motivo}"
+    );
+    assert!(!published(&ctx, "FVS103.txt"), "no CUV was recorded");
+    assert_eq!(
+        down.count(CARGAR),
+        1,
+        "one send per run, never retried inside it"
+    );
+
+    // Second run, SISPRO is back and already holds the invoice (the first send
+    // did arrive): it answers RVG18 with the CUV it has. The resend ends DONE
+    // with that CUV: no duplicate, no manual review.
+    let resp =
+        |name: &str| String::from_utf8(read(&format!("respuestas/{name}.txt"))).expect("utf8");
+    let back = FakeSispro::start(answers(&[("FVS103", 201, resp("rvg18"))]));
+    let settings = ctx.settings.clone().with("minsalud.base_url", back.url());
+    let ctx = ctx.with_settings(settings);
+    run_phase(&ctx, &request(None)).expect("second run");
+    assert_eq!(stored(&ctx, "FVS103").0, PhaseState::Done);
+    assert!(
+        tessia::phases::cuv::txt::txt_has_cuv(&fetch(&ctx, "FVS103.txt")),
+        "the existing CUV was kept"
+    );
+    assert_eq!(back.count(CARGAR), 1);
 }
 
 #[test]
