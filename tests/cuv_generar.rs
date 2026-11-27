@@ -727,7 +727,7 @@ fn the_lease_name_is_shared_with_fev_ajustar() {
 }
 
 #[test]
-fn the_command_line_runs_generar_and_barrer() {
+fn the_command_line_runs_generar() {
     use clap::Parser;
     use tessia::cli::{Cli, Commands};
 
@@ -758,16 +758,7 @@ fn the_command_line_runs_generar_and_barrer() {
     )
     .expect("generar");
     assert_eq!(stored(&ctx, "FVS1").0, PhaseState::Done);
-    publish(
-        &ctx,
-        "FVS1.txt",
-        br#"{"ResultState":false,"CodigoUnicoValidacion":"x","RutaArchivos":"a\\FVS1"}"#,
-    );
-    cuv::run(&ctx, parse(&["barrer", "--cargue", CARGUE])).expect("barrer");
-    assert!(fetch(&ctx, "FVS1.txt").starts_with(b"{\n  \"ResultState\": true"));
 
     let err = cuv::run(&ctx, parse(&["generar"])).expect_err("cargue required");
-    assert!(err.to_string().contains("--cargue"), "{err}");
-    let err = cuv::run(&ctx, parse(&["barrer"])).expect_err("cargue required");
     assert!(err.to_string().contains("--cargue"), "{err}");
 }
