@@ -25,7 +25,7 @@ use crate::context::AppContext;
 use crate::domain::phase::gate;
 use crate::domain::{Outcome, Phase};
 use crate::fevxml::{self, FevxmlError, PERIODO_INICIO_MINISTERIO, Params};
-use crate::phases::common::{PhaseReport, PhaseRequest};
+use crate::phases::common::{PhaseReport, PhaseRequest, outage_reason};
 use crate::storage::Artifacts;
 use crate::stores::proceso::{ClaimItem, ProcesoState};
 use crate::util::par;
@@ -322,7 +322,18 @@ fn submit(run: &Run<'_>, target: &Target, item: SendItem) -> Result<Option<Proce
                 "Error 500 al consumir el servicio"
             };
             let line = format!("{inv} {msg} ({err})");
-            return Ok(Some(finish(lines, inv, line, Outcome::failed, true, false)));
+            // SISPRO or the network is down: the same invoice may well go
+            // through later, and `proceso run` can tell it from a fault of the
+            // invoice by the marker.
+            let outage = err.is_outage();
+            let outcome = move |reason: String| {
+                if outage {
+                    Outcome::failed(outage_reason(&reason))
+                } else {
+                    Outcome::failed(reason)
+                }
+            };
+            return Ok(Some(finish(lines, inv, line, outcome, true, false)));
         }
     };
     run.tally.record(false);
@@ -330,8 +341,12 @@ fn submit(run: &Run<'_>, target: &Target, item: SendItem) -> Result<Option<Proce
     let line = format!("{inv} HTTP {status} {}", interpreted.summary);
     let Some(file) = interpreted.file_name.as_deref() else {
         let failed = interpreted.failed;
+        let server_error = status >= 500;
         let outcome = move |reason: String| {
-            if failed {
+            if failed && server_error {
+                // A 5xx: the service is struggling, not this invoice.
+                Outcome::failed(outage_reason(&reason))
+            } else if failed {
                 Outcome::failed(reason)
             } else {
                 Outcome::manual_review(reason)

@@ -20,7 +20,7 @@ use super::plan::{Plan, TfInput, build};
 use super::runtime::Runtime;
 use crate::context::AppContext;
 use crate::domain::{Outcome, Phase, PhaseState, valid_invoice};
-use crate::phases::common::PhaseReport;
+use crate::phases::common::{PhaseReport, outage_reason};
 use crate::shutdown;
 use crate::stores::proceso::{ClaimItem, ProcesoState};
 use crate::util::par;
@@ -277,7 +277,11 @@ fn outcome_of(plan: &Plan, processed: &Processed) -> Outcome {
             .line
             .strip_prefix(&prefix)
             .unwrap_or(&processed.line);
-        return Outcome::failed(line);
+        return if processed.outage {
+            Outcome::failed(outage_reason(line))
+        } else {
+            Outcome::failed(line)
+        };
     }
     let warning = if processed.warning.is_empty() {
         plan.stored_warning.clone()
@@ -364,6 +368,7 @@ mod tests {
         let failed = Processed {
             line: "FEV1 XML=NO_DISPONIBLE PDF=ERROR ZIP=FALTA (XML: HTTP 404 ; PDF: x) CPSCAN=PENDIENTE".into(),
             complete: false,
+            outage: false,
             warning: "ignored".into(),
         };
         assert_eq!(
@@ -375,9 +380,25 @@ mod tests {
         let done = Processed {
             line: "FEV1 XML=DESCARGADO PDF=DESCARGADO ZIP=OK".into(),
             complete: true,
+            outage: false,
             warning: String::new(),
         };
         assert_eq!(outcome_of(&p, &done), Outcome::done());
+        // An incomplete invoice whose provider is down says so, so `proceso
+        // run` can retry it later instead of dropping it.
+        let down = Processed {
+            line: "FEV1 XML=ERROR PDF=ERROR ZIP=FALTA (XML: HTTP 503 transitorio tras 3 intentos)"
+                .into(),
+            complete: false,
+            outage: true,
+            warning: String::new(),
+        };
+        assert_eq!(
+            outcome_of(&p, &down),
+            Outcome::failed(
+                "TERCERO_NO_DISPONIBLE: XML=ERROR PDF=ERROR ZIP=FALTA (XML: HTTP 503 transitorio tras 3 intentos)"
+            )
+        );
         let mut q = p;
         q.stored_warning = "CPSCAN sin soporte (SSC 9, origen PC)".into();
         assert_eq!(

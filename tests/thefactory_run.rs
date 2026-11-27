@@ -372,6 +372,53 @@ fn a_missing_document_fails_the_invoice_and_a_rerun_fetches_only_that_part() {
 }
 
 #[test]
+fn a_provider_that_is_down_is_recorded_as_an_outage_and_a_missing_document_is_not() {
+    let (_db, ctx) = world();
+    // FEV4: TheFactory answers 503 for everything. FEV5: the XML does not
+    // exist yet (404), a fact about the invoice, not about the provider.
+    let tf = tf_server(Arc::new(|kind, invoice| {
+        if invoice == "FEV4" {
+            MockResponse::text(503, "down")
+        } else if kind == "xml" {
+            MockResponse::json(404, "")
+        } else {
+            good(kind, invoice)
+        }
+    }));
+    let (api, bucket) = (api_server(&[]), bucket_server(&[]));
+    let report = run(
+        &ctx,
+        vec![TfInput::new("FEV4", None), TfInput::new("FEV5", None)],
+        (&tf, &api, &bucket),
+    );
+
+    let (state4, motivo4, _) = state(&ctx, "FEV4");
+    assert_eq!(state4, PhaseState::Failed);
+    assert!(
+        motivo4.starts_with("TERCERO_NO_DISPONIBLE: XML=ERROR PDF=ERROR ZIP=FALTA"),
+        "{motivo4}"
+    );
+    let (state5, motivo5, _) = state(&ctx, "FEV5");
+    assert_eq!(state5, PhaseState::Failed);
+    assert!(!motivo5.contains("TERCERO_NO_DISPONIBLE"), "{motivo5}");
+
+    // `proceso run` reads the markers: FEV4 is an outage of TheFactory, FEV5 is not.
+    let classify = |invoice: &str| {
+        tessia::phases::proceso::classify::classify(
+            "thefactory",
+            invoice,
+            Ok(report.clone()),
+            &|| None,
+        )
+    };
+    assert_eq!(
+        classify("FEV4").outage.as_ref().map(|o| o.provider),
+        Some("thefactory")
+    );
+    assert!(classify("FEV5").outage.is_none());
+}
+
+#[test]
 fn invalid_downloads_are_reported_with_the_java_codes() {
     let (_db, ctx) = world();
     let tf = tf_server(Arc::new(|kind, _| match kind {

@@ -83,6 +83,10 @@ pub struct FetchResult {
     pub data: Vec<u8>,
     /// Explains `NotAvailable`/`Failed` (never contains credentials).
     pub detail: String,
+    /// `Failed` because the provider or the network is down (no answer, or a
+    /// transient status that outlasted the retries), not because of the
+    /// document: the same invoice may well work later.
+    pub outage: bool,
 }
 
 impl FetchResult {
@@ -91,6 +95,14 @@ impl FetchResult {
             status: Status::Failed,
             data: Vec::new(),
             detail,
+            outage: false,
+        }
+    }
+
+    fn outage(detail: String) -> Self {
+        Self {
+            outage: true,
+            ..Self::failed(detail)
         }
     }
 
@@ -99,6 +111,7 @@ impl FetchResult {
             status: Status::NotAvailable,
             data: Vec::new(),
             detail,
+            outage: false,
         }
     }
 }
@@ -169,15 +182,21 @@ impl TheFactoryClient {
                 Ok(answer) => answer,
                 Err(err) => {
                     let host = self.base.host_str().unwrap_or_default();
-                    return Ok(FetchResult::failed(format!("{label} {host}{path}: {err}")));
+                    // No answer at all: the network or the provider is down.
+                    return Ok(FetchResult::outage(format!("{label} {host}{path}: {err}")));
                 }
             };
             let obj = match parse_object(&raw) {
                 Ok(obj) => obj,
                 Err(()) => {
-                    return Ok(FetchResult::failed(format!(
-                        "{label}: respuesta no JSON (HTTP {status})"
-                    )));
+                    let detail = format!("{label}: respuesta no JSON (HTTP {status})");
+                    // An error page of a struggling server is an outage; a
+                    // 200 that is not JSON is a fault of the answer.
+                    return Ok(if is_transient_status(status) {
+                        FetchResult::outage(detail)
+                    } else {
+                        FetchResult::failed(detail)
+                    });
                 }
             };
             if is_transient(status, obj.as_ref()) {
@@ -185,7 +204,7 @@ impl TheFactoryClient {
                     self.pause(attempt);
                     continue;
                 }
-                return Ok(FetchResult::failed(format!(
+                return Ok(FetchResult::outage(format!(
                     "{label}: HTTP {status} transitorio tras {MAX_ATTEMPTS} intentos"
                 )));
             }
@@ -294,8 +313,13 @@ fn codigo(status: u16, obj: &Map<String, Value>) -> i64 {
 }
 
 /// 408/429/5xx (status or `codigo`), or an empty 200.
+/// A status that says the server is struggling, not that the request is wrong.
+fn is_transient_status(status: u16) -> bool {
+    status == 408 || status == 429 || status >= 500
+}
+
 pub(crate) fn is_transient(status: u16, obj: Option<&Map<String, Value>>) -> bool {
-    if status == 408 || status == 429 || status >= 500 {
+    if is_transient_status(status) {
         return true;
     }
     let Some(obj) = obj else {
@@ -358,6 +382,7 @@ fn interpret(
             status: Status::Downloaded,
             data,
             detail: String::new(),
+            outage: false,
         },
         Err(err) => FetchResult::failed(format!("{label}: Base64 invalido: {err}")),
     }
@@ -502,6 +527,34 @@ mod tests {
     }
 
     #[test]
+    fn a_dead_network_is_an_outage_but_a_bad_document_is_not() {
+        // Nothing listens on this port.
+        let down = TheFactoryClient::new(ClientConfig {
+            base_url: "http://127.0.0.1:9/".into(),
+            token_empresa: "emp".into(),
+            token_password: "pw".into(),
+            http: Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("client"),
+            limiter: None,
+            sleeper: Some(Arc::new(|_| {})),
+        })
+        .expect("client");
+        let r = down.fetch(Kind::Xml, "FEV1").expect("fetch");
+        assert_eq!(r.status, Status::Failed);
+        assert!(r.outage, "{}", r.detail);
+
+        // Answered, but the document is unusable: a fault of the data.
+        let server = MockServer::sequence(vec![MockResponse::json(200, r#"{"ContenedorXml":12}"#)]);
+        let r = client_for(&server, Arc::default())
+            .fetch(Kind::Xml, "FEV1")
+            .expect("fetch");
+        assert_eq!(r.status, Status::Failed);
+        assert!(!r.outage, "{}", r.detail);
+    }
+
+    #[test]
     fn transient_answers_are_retried_three_times_with_pauses() {
         for (status, body) in [
             (503, "{}"),
@@ -515,6 +568,7 @@ mod tests {
             let client = client_for(&server, Arc::clone(&sleeps));
             let r = client.fetch(Kind::Pdf, "FEV1").expect("fetch");
             assert_eq!(r.status, Status::Failed, "{status} {body}");
+            assert!(r.outage, "a provider that keeps answering {status} is down");
             assert_eq!(
                 r.detail,
                 format!("PDF: HTTP {status} transitorio tras 3 intentos")
