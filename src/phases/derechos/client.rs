@@ -29,9 +29,9 @@ use serde_json::json;
 use super::rights::{AffiliateQuery, Rights, alternate_doc_type, parse_response};
 use crate::config::Settings;
 use crate::http::limiter::specs;
-use crate::http::token::{AuthError, FetchedToken};
+use crate::http::token::{AuthError, FetchError, FetchedToken, TokenError};
 use crate::http::{
-    AdaptiveLimiter, ClientOptions, RetryPolicy, TokenCache, build_client, jwt_expiry,
+    AdaptiveLimiter, ClientOptions, HttpError, RetryPolicy, TokenCache, build_client, jwt_expiry,
     send_with_auth, send_with_retry,
 };
 
@@ -62,6 +62,11 @@ pub enum ValidatorError {
     /// cannot help.
     #[error("derechos: validator authentication failed: {0}")]
     Authentication(String),
+    /// The login or the validator could not be reached (network down, DNS,
+    /// TLS, 5xx on the login): says nothing about the credentials, and the
+    /// work is worth retrying later.
+    #[error("derechos: validator unreachable: {0}")]
+    Unreachable(String),
 }
 
 /// One validator answer.
@@ -159,7 +164,7 @@ impl ValidatorClient {
             move || fetch_token(&http, &config, &retry)
         };
         Ok(Self {
-            tokens: TokenCache::new(TOKEN_SKEW, fetch),
+            tokens: TokenCache::new_typed(TOKEN_SKEW, fetch),
             limiter: AdaptiveLimiter::new(specs::derechos(max_concurrency).options()),
             config,
             http,
@@ -211,7 +216,13 @@ impl ValidatorClient {
                 .body(payload.clone())
         })
         .map_err(|err| match err {
+            AuthError::Token(TokenError::Unreachable(message)) => {
+                ValidatorError::Unreachable(message)
+            }
             AuthError::Token(err) => ValidatorError::Authentication(err.to_string()),
+            AuthError::Http(err @ HttpError::Transport { .. }) => {
+                ValidatorError::Unreachable(err.to_string())
+            }
             AuthError::Http(err) => ValidatorError::Technical(err.to_string()),
         })?;
         let status = response.status().as_u16();
@@ -257,7 +268,8 @@ fn fetch_token(
     http: &Client,
     config: &ClientConfig,
     retry: &RetryPolicy,
-) -> Result<FetchedToken, String> {
+) -> Result<FetchedToken, FetchError> {
+    let rejected = |message: String| FetchError::Rejected(format!("derechosapi: token: {message}"));
     let response = send_with_retry(retry, None, || {
         http.post(&config.token_url).form(&[
             ("grant_type", "password"),
@@ -267,22 +279,33 @@ fn fetch_token(
             ("password", config.password.as_str()),
         ])
     })
-    .map_err(|err| format!("derechosapi: token: {err}"))?;
-    if response.status().as_u16() != 200 {
-        return Err(format!(
-            "derechosapi: token: HTTP {}",
-            response.status().as_u16()
-        ));
+    .map_err(|err| match err {
+        // No answer at all: the login is unreachable, the credentials were
+        // never judged.
+        HttpError::Transport { .. } => {
+            FetchError::Unreachable(format!("derechosapi: token: {err}"))
+        }
+        HttpError::Build(_) => rejected(err.to_string()),
+    })?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        // A server that is down or throttling is not a verdict on the
+        // credentials; a 4xx refusal is.
+        return Err(if matches!(status, 408 | 425 | 429 | 500..=599) {
+            FetchError::Unreachable(format!("derechosapi: token: HTTP {status}"))
+        } else {
+            rejected(format!("HTTP {status}"))
+        });
     }
     let mut raw = Vec::new();
     response
         .take(1 << 20)
         .read_to_end(&mut raw)
-        .map_err(|err| format!("derechosapi: token: {err}"))?;
+        .map_err(|err| rejected(err.to_string()))?;
     let answer: TokenAnswer = serde_json::from_slice(&raw)
         .ok()
         .filter(|a: &TokenAnswer| !a.access_token.is_empty())
-        .ok_or("derechosapi: token: response without access_token")?;
+        .ok_or_else(|| rejected("response without access_token".to_owned()))?;
     let expires_at = if answer.expires_in > 0 {
         SystemTime::now() + Duration::from_secs(answer.expires_in.unsigned_abs())
     } else {

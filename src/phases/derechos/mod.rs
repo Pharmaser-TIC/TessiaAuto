@@ -219,6 +219,7 @@ pub fn execute(
             results,
             stats,
             auth_failure: None,
+            outage: None,
         }),
         Some(client) => {
             let cache = ctx.derechos_cache();
@@ -256,10 +257,13 @@ pub fn execute(
             execution.report.skip(&result.invoice, SKIP_OTHER_MACHINE);
         }
     }
-    execution.failure = match validation.auth_failure {
-        Some(detail) => Some(DerechosError::AuthenticationStopped { untouched, detail }),
-        None if validator.is_some() => check_availability(&execution.stats, &policy(ctx)).err(),
-        None => None,
+    execution.failure = match (validation.auth_failure, validation.outage) {
+        (Some(detail), _) => Some(DerechosError::AuthenticationStopped { untouched, detail }),
+        (None, Some(detail)) => Some(DerechosError::ValidatorUnreachable { untouched, detail }),
+        (None, None) if validator.is_some() => {
+            check_availability(&execution.stats, &policy(ctx)).err()
+        }
+        (None, None) => None,
     };
     Ok(execution)
 }
@@ -404,6 +408,11 @@ fn print_summary(cargue_id: &str, execution: &Execution) {
         execution.report.outcomes.len() - done,
         result_file::RESULT_DIR
     );
+    if let Some(DerechosError::ValidatorUnreachable { untouched, .. }) = &execution.failure {
+        println!(
+            "No se pudo contactar el validador de derechos (red o servidor caido): se detuvo la validacion. {untouched} factura(s) quedaron sin tocar y se retoman al volver a ejecutar; las credenciales no fueron rechazadas."
+        );
+    }
     if let Some(DerechosError::AuthenticationStopped { untouched, .. }) = &execution.failure {
         println!(
             "El validador de derechos rechazo el token o las credenciales aun despues de renovarlo: se detuvo la validacion. {untouched} factura(s) quedaron sin tocar y se retoman al volver a ejecutar; corrige las credenciales (derechos.*) y ejecuta de nuevo."

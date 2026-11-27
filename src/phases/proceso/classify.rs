@@ -163,6 +163,17 @@ fn classify_error(phase: &str, invoice: &str, err: &Error) -> Verdict {
             ..Verdict::new(Status::Failed, DERECHOS_AUTH_STOP)
         };
     }
+    if phase == "derechos"
+        && let Some(DerechosError::ValidatorUnreachable { .. }) = err.downcast_ref()
+    {
+        // The validator or its login is down: not a verdict on the credentials,
+        // so it does not abort; the invoice was left untouched for the next run.
+        return Verdict {
+            error: Some(format!("{err:#}")),
+            resumable: true,
+            ..Verdict::new(Status::Failed, THIRD_PARTY_OUTAGE)
+        };
+    }
     if is_transient_store_error(err) {
         return Verdict {
             conflict: true,
@@ -358,6 +369,19 @@ mod tests {
         let other = anyhow::Error::new(DerechosError::Interrupted);
         let v = classify("derechos", "A1", Err(other), &none);
         assert!(!v.fatal && v.error.is_some());
+    }
+
+    #[test]
+    fn an_unreachable_derechos_validator_is_resumable_not_a_credentials_stop() {
+        let err = anyhow::Error::new(DerechosError::ValidatorUnreachable {
+            untouched: 1,
+            detail: "derechosapi: token: se rindio".into(),
+        });
+        let v = classify("derechos", "A1", Err(err), &none);
+        assert_eq!(v.status, Status::Failed);
+        assert!(v.resumable && !v.fatal, "it must not abort the run");
+        let message = v.error.expect("still reported");
+        assert!(!message.contains("credenciales"), "{message}");
     }
 
     #[test]

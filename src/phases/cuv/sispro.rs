@@ -188,7 +188,9 @@ impl SisproClient {
     fn token(&self) -> Result<String, SisproError> {
         self.tokens
             .token()
-            .map_err(|TokenError::Fetch(msg)| SisproError::Token(msg))
+            .map_err(|(TokenError::Fetch(msg) | TokenError::Unreachable(msg))| {
+                SisproError::Token(msg)
+            })
     }
 }
 

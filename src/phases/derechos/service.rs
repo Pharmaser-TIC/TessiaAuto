@@ -156,6 +156,9 @@ pub struct Validation {
     /// the invoices resolved before the stop (plus the ones without a
     /// document); the others are untouched.
     pub auth_failure: Option<String>,
+    /// Set when the login or the validator could not be reached (not a
+    /// credentials problem): same shape as `auth_failure`, other cause.
+    pub outage: Option<String>,
 }
 
 /// Picks the invoices to validate. With `only`, exactly those (known)
@@ -220,6 +223,9 @@ enum Resolution {
     Resolved(Resolved),
     /// The validator rejected the credentials: the run stops.
     AuthFailed(String),
+    /// The login or the validator could not be reached: the run stops, the
+    /// credentials were not judged.
+    Unreachable(String),
     /// Skipped or cancelled by the stop: no answer about this affiliate.
     Aborted,
 }
@@ -248,16 +254,21 @@ pub fn validate(
     let affiliates = distinct_affiliates(&owners);
     let stop = AtomicBool::new(false);
     let auth_failure: Mutex<Option<String>> = Mutex::new(None);
+    let outage: Mutex<Option<String>> = Mutex::new(None);
     let resolutions = par::map(
         affiliates.clone(),
         options.concurrency.max(1),
         |affiliate| {
             let resolution = resolve(&affiliate, validator, cache, options, &stop);
-            if let Resolution::AuthFailed(detail) = &resolution {
-                let mut slot = auth_failure
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                slot.get_or_insert_with(|| detail.clone());
+            let stopped = match &resolution {
+                Resolution::AuthFailed(detail) => Some((&auth_failure, detail)),
+                Resolution::Unreachable(detail) => Some((&outage, detail)),
+                _ => None,
+            };
+            if let Some((slot, detail)) = stopped {
+                slot.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_or_insert_with(|| detail.clone());
                 stop.store(true, Ordering::SeqCst);
             }
             resolution
@@ -267,6 +278,9 @@ pub fn validate(
         return Err(DerechosError::Interrupted);
     }
     let auth_failure = auth_failure
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let outage = outage
         .into_inner()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let resolved: HashMap<String, Resolved> = affiliates
@@ -281,6 +295,7 @@ pub fn validate(
         stats: stats_of(affiliates.len(), &resolved),
         results: classify(invoices, &owners, &resolved),
         auth_failure,
+        outage,
     })
 }
 
@@ -373,6 +388,7 @@ fn resolve(
     match validator.validate(affiliate) {
         Err(_) if stop.load(Ordering::SeqCst) || shutdown::requested() => Resolution::Aborted,
         Err(ValidatorError::Authentication(detail)) => Resolution::AuthFailed(detail),
+        Err(ValidatorError::Unreachable(detail)) => Resolution::Unreachable(detail),
         Err(ValidatorError::Technical(detail)) => {
             tracing::warn!(doc_type = %affiliate.doc_type, error = %detail, "rights validator failed");
             Resolution::Resolved(failed(REASON_UNAVAILABLE.to_owned(), true))

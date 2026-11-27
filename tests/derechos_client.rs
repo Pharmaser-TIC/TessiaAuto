@@ -305,6 +305,100 @@ fn a_failed_login_is_an_authentication_error_and_never_leaks_credentials() {
     }
 }
 
+fn client_with(mock: &MockServer, edit: impl FnOnce(&mut ClientConfig)) -> ValidatorClient {
+    let mut config = ClientConfig::from_settings(&settings(mock)).expect("config");
+    edit(&mut config);
+    ValidatorClient::with_retry(config, 8, instant_retry()).expect("client")
+}
+
+#[test]
+fn a_login_that_cannot_be_reached_is_an_outage_not_a_credentials_error() {
+    // Nothing listens on the token url: the network is down, the credentials
+    // were never judged.
+    let mock = server(3600, |_| MockResponse::json(200, &complete_bundle()));
+    let client = client_with(&mock, |c| c.token_url = "http://127.0.0.1:9/token".into());
+    let err = client.validate(&affiliate("CC", "1")).expect_err("down");
+    match &err {
+        ValidatorError::Unreachable(message) => {
+            assert!(
+                message.contains("os error"),
+                "the root cause is shown: {message}"
+            );
+            assert!(!message.contains("secret"), "{message}");
+        }
+        other => panic!("expected an outage, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_login_answering_5xx_is_an_outage_but_a_401_is_still_a_rejection() {
+    for status in [500, 502, 503, 429] {
+        let mock = MockServer::start(move |req| {
+            if req.path == "/token" {
+                MockResponse::text(status, "down")
+            } else {
+                MockResponse::json(200, &complete_bundle())
+            }
+        });
+        let err = client_for(&mock)
+            .validate(&affiliate("CC", "1"))
+            .expect_err("login down");
+        assert!(
+            matches!(err, ValidatorError::Unreachable(_)),
+            "{status}: {err:?}"
+        );
+    }
+    for status in [400, 401, 403] {
+        let mock = MockServer::start(move |req| {
+            if req.path == "/token" {
+                MockResponse::text(status, "bad credentials")
+            } else {
+                MockResponse::json(200, &complete_bundle())
+            }
+        });
+        let err = client_for(&mock)
+            .validate(&affiliate("CC", "1"))
+            .expect_err("rejected");
+        assert!(
+            matches!(err, ValidatorError::Authentication(_)),
+            "{status}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn a_validator_that_cannot_be_reached_after_a_good_login_is_an_outage() {
+    let mock = server(3600, |_| MockResponse::json(200, &complete_bundle()));
+    let client = client_with(&mock, |c| {
+        c.validate_url = "http://127.0.0.1:9/validate".into();
+    });
+    let err = client.validate(&affiliate("CC", "1")).expect_err("down");
+    assert!(matches!(err, ValidatorError::Unreachable(_)), "{err:?}");
+}
+
+#[test]
+fn an_unreachable_login_stops_the_validation_and_leaves_the_invoices_untouched() {
+    use tessia::phases::derechos::service::{InvoiceInput, LineInput, ValidateOptions, validate};
+    let mock = server(3600, |_| MockResponse::json(200, &complete_bundle()));
+    let client = client_with(&mock, |c| c.token_url = "http://127.0.0.1:9/token".into());
+    let invoices = [InvoiceInput {
+        invoice: "FVS1".into(),
+        lines: vec![LineInput {
+            doc_type: "CC".into(),
+            doc_number: "123".into(),
+            ..LineInput::default()
+        }],
+    }];
+    let validation =
+        validate(&invoices, &client, None, &ValidateOptions::default()).expect("validation");
+    assert!(validation.outage.is_some(), "{validation:?}");
+    assert!(
+        validation.auth_failure.is_none(),
+        "not a credentials problem"
+    );
+    assert!(validation.results.is_empty(), "nothing was resolved");
+}
+
 #[test]
 fn the_process_shares_one_client_per_configuration() {
     let mock = server(3600, |_| MockResponse::json(200, &complete_bundle()));

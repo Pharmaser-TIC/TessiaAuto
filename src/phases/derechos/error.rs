@@ -23,6 +23,14 @@ pub enum DerechosError {
         "validador de derechos: credenciales o token rechazados aun despues de renovarlo; {untouched} factura(s) quedaron sin tocar, corrige las credenciales y ejecuta de nuevo: derechos: validator authentication failed: {detail}"
     )]
     AuthenticationStopped { untouched: usize, detail: String },
+    /// The login or the validator could not be reached (network, DNS, TLS, a
+    /// server down). The credentials were not judged: nothing says they are
+    /// wrong. Resolved invoices were saved; `untouched` were restored to their
+    /// previous state and are retaken on the next run.
+    #[error(
+        "validador de derechos: no se pudo contactar el servicio (red o servidor caido); {untouched} factura(s) quedaron sin tocar y se retoman al volver a ejecutar: {detail}"
+    )]
+    ValidatorUnreachable { untouched: usize, detail: String },
     /// Too many technical failures: the validator looks down. Outcomes were
     /// saved first; the invoices stay in `REVISION_MANUAL`.
     #[error(
