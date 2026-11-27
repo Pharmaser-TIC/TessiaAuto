@@ -251,8 +251,14 @@ impl Fixture {
 #[test]
 fn run_phase_files_every_invoice_of_the_cargue_through_the_four_steps() {
     let f = fixture(&[("FEV1", "1,000.00", "1000"), ("FEV2", "250.50", "250.50")]);
-    let report = radicacion::run_phase_with(&f.ctx, &PhaseRequest::new(CARGUE), &fast_options())
-        .expect("run");
+    // The invoices advance on their own and share a micro-batch only when they
+    // reach a step within `batch_wait` of each other. The window of
+    // `fast_options` (60 ms) is too tight on a loaded machine: a late invoice
+    // fell into a second batch and the count was 5 instead of 4.
+    let mut options = fast_options();
+    options.engine.batch_wait = Duration::from_millis(500);
+    let report =
+        radicacion::run_phase_with(&f.ctx, &PhaseRequest::new(CARGUE), &options).expect("run");
     let states: Vec<_> = report
         .outcomes
         .iter()
