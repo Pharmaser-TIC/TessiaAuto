@@ -12,7 +12,6 @@
 //!   follow-up (CONC-01..03, 10, 13).
 
 pub mod catalog;
-pub mod cli;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake_portal;
 pub mod files;
@@ -29,7 +28,4 @@ mod plan_tests;
 #[cfg(test)]
 mod rules_tests;
 
-pub use cli::Args;
-pub use run::{
-    ConciliarOptions, Execution, lease_name, run, run_phase, run_phase_detailed, run_request,
-};
+pub use run::{ConciliarOptions, Execution, lease_name, run_phase_detailed, run_request};

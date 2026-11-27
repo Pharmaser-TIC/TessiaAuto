@@ -18,7 +18,6 @@
 //! }
 //! ```
 
-pub mod cli;
 mod error;
 pub mod migrate;
 mod pool;

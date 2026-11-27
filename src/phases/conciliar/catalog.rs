@@ -110,10 +110,12 @@ impl Catalog {
         Self::new(rows.into_iter().filter_map(item_from_row).collect())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

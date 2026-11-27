@@ -134,13 +134,6 @@ impl Execution {
     }
 }
 
-/// `proceso run` entry point: no follow-up, no printing (the lines are in
-/// [`run_phase_detailed`]'s result). A run with unreconciled invoices is not an
-/// error here; use [`run_phase_detailed`] to read [`Execution::incomplete`].
-pub fn run_phase(ctx: &AppContext, req: &PhaseRequest) -> Result<PhaseReport> {
-    Ok(run_phase_detailed(ctx, req, &ConciliarOptions::for_proceso())?.report)
-}
-
 /// [`run_phase`] with explicit options and the full [`Execution`].
 pub fn run_phase_detailed(
     ctx: &AppContext,
@@ -150,14 +143,9 @@ pub fn run_phase_detailed(
     execute(ctx, req, opts)
 }
 
-/// The command line: prints the lines and the summary, runs the follow-up and
-/// fails when any invoice ended blocked, different, in manual review or failed.
-pub fn run(ctx: &AppContext, args: super::cli::Args) -> Result<()> {
-    let req = args.common.to_request()?;
-    run_request(ctx, &req, &ConciliarOptions::standalone())
-}
-
-/// [`run`] for an explicit request and options.
+/// The standalone run for an explicit request and options (the UI job): prints
+/// the lines and the summary, runs the follow-up and fails when any invoice
+/// ended blocked, different, in manual review or failed.
 pub fn run_request(ctx: &AppContext, req: &PhaseRequest, opts: &ConciliarOptions) -> Result<()> {
     let exec = execute(ctx, req, opts)?;
     for line in &exec.lines {

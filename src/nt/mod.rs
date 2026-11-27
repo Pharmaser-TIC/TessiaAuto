@@ -30,24 +30,17 @@
 //! assert_eq!(rows[0].id, "77");
 //! ```
 
+#[cfg(any(test, feature = "test-support"))]
 mod memory;
 mod redis_nt;
 mod row;
 
 use std::collections::BTreeMap;
 
+#[cfg(any(test, feature = "test-support"))]
 pub use memory::MemoryNt;
 pub use redis_nt::RedisNt;
 pub use row::NtRow;
-
-/// Fields indexed by the collection (`idx:<campo>:<valor>`).
-pub const INDEXED_FIELDS: [&str; 5] = [
-    "cod_auf",
-    "cod_mutual",
-    "cum_facturar",
-    "contrato",
-    "estado",
-];
 
 #[derive(Debug, thiserror::Error)]
 pub enum NtError {

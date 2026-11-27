@@ -9,14 +9,18 @@ use crate::util::fsx;
 /// Folder names of the original Go layout, relative to the workdir root.
 /// Phase writers add their own constants when they need another folder.
 pub mod layout {
+    #[cfg(any(test, feature = "test-support"))]
     /// Invoice XML, PDF and ZIP XML/PDF (`XML/<F>_XML_PDF.zip`).
     pub const XML: &str = "XML";
+    #[cfg(any(test, feature = "test-support"))]
     /// CRC support ZIPs (`CRC/CRC_<nit>_<F>.zip`).
     pub const CRC: &str = "CRC";
+    #[cfg(any(test, feature = "test-support"))]
     /// CPScan support files and sidecars (`CPSCAN/<F>.support.pdf`, `<F>.cpscan.json`).
     pub const CPSCAN: &str = "CPSCAN";
     /// Rights per invoice (`derechos/<F>.json`).
     pub const DERECHOS: &str = "derechos";
+    #[cfg(any(test, feature = "test-support"))]
     /// Filed files archive (`Radicado/<relative path>`).
     pub const RADICADO: &str = "Radicado";
 }

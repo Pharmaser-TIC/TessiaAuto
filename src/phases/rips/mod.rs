@@ -21,7 +21,6 @@
 //! work, and the claim already excludes concurrent writers of one `<F>.json`.
 
 pub mod builder;
-pub mod cli;
 pub mod derechos;
 pub mod encode;
 pub mod input;
@@ -43,7 +42,6 @@ use crate::stores::proceso::{ClaimItem, ProcesoState};
 use crate::util::par;
 
 pub use builder::{CODE_CONVENIO_NOT_OK, HourFn, RipsOptions, deterministic_hour};
-pub use cli::Args;
 pub use plan::{Planned, ReadyRips, Skipped};
 pub use selection::{Candidate, Selection};
 
@@ -126,20 +124,6 @@ struct Job {
     version: i64,
 }
 
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    let cli::Command::Generar(generar) = args.command;
-    let req = generar.common.to_request()?;
-    let opts = RipsOptions::from_settings(&ctx.settings, generar.cod_prestador.as_deref())?;
-    let selection = selection::load(ctx, &req)?;
-    let exec = execute(ctx, &req, selection, &opts)?;
-    print_execution(&exec, &req.cargue_id);
-    match exec.errors.first() {
-        Some(first) => bail!("{first}"),
-        None => Ok(()),
-    }
-}
-
 /// Runs the phase for the invoices of `req` (called by `proceso run`).
 pub fn run_phase(ctx: &AppContext, req: &PhaseRequest) -> Result<PhaseReport> {
     let opts = RipsOptions::from_settings(&ctx.settings, None)?;
@@ -148,23 +132,6 @@ pub fn run_phase(ctx: &AppContext, req: &PhaseRequest) -> Result<PhaseReport> {
     match exec.errors.first() {
         Some(first) => bail!("{first}"),
         None => Ok(exec.report),
-    }
-}
-
-fn print_execution(exec: &Execution, cargue_id: &str) {
-    for s in &exec.skipped {
-        println!("  skip {} {}: {}", s.invoice, s.code, s.detail);
-    }
-    for (invoice, file, meds, oss) in &exec.written {
-        println!("  {invoice} -> {file} (medicamentos={meds} otros_servicios={oss})");
-    }
-    println!(
-        "rips: ready={} skipped={}",
-        exec.written.len(),
-        exec.skipped.len()
-    );
-    if !exec.written.is_empty() {
-        println!("rips: wrote {} file(s) in {cargue_id}", exec.written.len());
     }
 }
 

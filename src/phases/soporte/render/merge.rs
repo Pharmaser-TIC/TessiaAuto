@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
+#[cfg(any(test, feature = "test-support"))]
 use lopdf::content::Content;
 use lopdf::xref::XrefType;
 use lopdf::{Dictionary, Document, Object, ObjectId};
@@ -128,11 +129,13 @@ fn shift_references(object: &mut Object, offset: u32) {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// Number of pages of a PDF.
 pub fn page_count(pdf: &[u8]) -> Result<usize> {
     Ok(Document::load_mem(pdf)?.get_pages().len())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// Per page, the strings drawn with `Tj`/`TJ`, joined by spaces (WinAnsi bytes
 /// read as Latin-1). A structural check for tests and diagnostics, not a text
 /// extractor: fonts with custom encodings come out as raw bytes.
@@ -160,6 +163,7 @@ pub fn page_texts(pdf: &[u8]) -> Result<Vec<String>> {
     Ok(out)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn latin1(object: &Object) -> Option<String> {
     match object {
         Object::String(bytes, _) => Some(bytes.iter().map(|b| char::from(*b)).collect()),
@@ -167,6 +171,7 @@ fn latin1(object: &Object) -> Option<String> {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// `(width, height)` of the MediaBox of each page, in points.
 pub fn page_sizes(pdf: &[u8]) -> Result<Vec<(f64, f64)>> {
     let doc = Document::load_mem(pdf)?;
@@ -193,6 +198,7 @@ pub fn page_sizes(pdf: &[u8]) -> Result<Vec<(f64, f64)>> {
     Ok(sizes)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// Number of image XObjects referenced by each page's resources.
 pub fn page_image_counts(pdf: &[u8]) -> Result<Vec<usize>> {
     let doc = Document::load_mem(pdf)?;

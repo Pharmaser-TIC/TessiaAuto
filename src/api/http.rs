@@ -88,6 +88,7 @@ pub fn parse_json<T: DeserializeOwned>(
         .map_err(|err| JsonError::Invalid(err.to_string()))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// The request body as `T`, trailing data ignored (Go `decodeJSONBody`):
 /// 413 `cuerpo demasiado grande` above `limit`, 400 `cuerpo invalido: <err>`.
 pub fn read_json<T: DeserializeOwned>(req: &Request, limit: usize) -> Result<T, ApiError> {

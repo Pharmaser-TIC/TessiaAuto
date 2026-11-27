@@ -718,47 +718,10 @@ fn configuration_and_worker_limits_are_checked_first() {
 }
 
 #[test]
-fn the_lease_name_is_shared_with_fev_ajustar() {
+fn the_lease_name_is_per_invoice_and_normalized() {
     assert_eq!(
         lease_name("Convenio_1_2", "fvs-12"),
         "cuv:Convenio_1_2:FVS12"
     );
     assert_eq!(cuv::SKIP_OTHER_MACHINE, "EN_PROCESO_OTRA_MAQUINA");
-}
-
-#[test]
-fn the_command_line_runs_generar() {
-    use clap::Parser;
-    use tessia::cli::{Cli, Commands};
-
-    let db = TestDb::new();
-    let (regimen, contrato, input, _) = xml_case("contributivo");
-    let fake = FakeSispro::start(answers(&[("FVS1", 200, success_body("FVS1"))]));
-    let ctx = context(&db, fake.url(), &contrato);
-    seed(&ctx, "FVS1", &regimen, Some(&input));
-    let parse = |args: &[&str]| {
-        let argv: Vec<&str> = ["facturacion", "cuv"].iter().chain(args).copied().collect();
-        match Cli::try_parse_from(argv).expect("parse").command {
-            Commands::Cuv(args) => args,
-            other => panic!("unexpected {other:?}"),
-        }
-    };
-
-    cuv::run(
-        &ctx,
-        parse(&[
-            "generar",
-            "--cargue",
-            CARGUE,
-            "--invoices",
-            "fvs-1",
-            "--workers",
-            "2",
-        ]),
-    )
-    .expect("generar");
-    assert_eq!(stored(&ctx, "FVS1").0, PhaseState::Done);
-
-    let err = cuv::run(&ctx, parse(&["generar"])).expect_err("cargue required");
-    assert!(err.to_string().contains("--cargue"), "{err}");
 }

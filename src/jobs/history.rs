@@ -7,7 +7,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use chrono::DateTime;
@@ -120,7 +120,8 @@ impl HistoryFile {
         }
     }
 
-    pub fn path(&self) -> Option<&Path> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn path(&self) -> Option<&std::path::Path> {
         self.path.as_deref()
     }
 

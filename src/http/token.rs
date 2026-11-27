@@ -84,6 +84,7 @@ impl TokenCache {
         Ok(fetched.token)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// Drops the cached token so the next call fetches again.
     pub fn invalidate(&self) {
         let mut cached = self

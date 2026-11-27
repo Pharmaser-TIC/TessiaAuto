@@ -49,6 +49,7 @@ pub struct SoporteRun {
 }
 
 impl SoporteRun {
+    #[cfg(any(test, feature = "test-support"))]
     /// `soporte: ok=N existing=N failed=N`.
     pub fn summary_line(&self) -> String {
         format!(

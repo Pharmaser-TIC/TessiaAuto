@@ -38,19 +38,18 @@ writers that start from the foundation.
   removed afterwards. The server allows ~100 connections shared by all test binaries; keep test pools
   small (`TestDb` uses 6).
 * Running: set `TESSIA_DATABASE_URL`, `TESSIA_REDIS_URL`, `TESSIA_CASSANDRA_BASE_URL`,
-  `TESSIA_CASSANDRA_API_KEY`, `TESSIA_CASSANDRA_BUCKET` (or `--config file.env`), then
-  `facturacion db migrate` (also done automatically when any phase command starts).
+  `TESSIA_CASSANDRA_API_KEY`, `TESSIA_CASSANDRA_BUCKET` (or `--config file.env`); the migrations are applied
+  automatically when the window starts.
 
 ## Module map
 
 ```
 src/
-  main.rs            thin: tracing to stderr (RUST_LOG), parse, dispatch, "Error: {err:#}" -> exit 1, usage -> exit 2
+  main.rs            thin: tracing to stderr (RUST_LOG), `--config`, opens the window, "Error: {err:#}" -> exit 1, usage -> exit 2
   lib.rs             exposes every module (integration tests import `tessia::...`)
-  cli.rs             top-level clap tree; each phase owns its Args in phases/<name>/cli.rs
   build.rs           re-embeds migrations when migrations/ changes
-  config/            Settings (get/require/is_set), key registry, env file, `config check`
-  db/                DbPool, DbError (+ is_transient), with_retry, embedded migrations, TestDb, `db migrate`
+  config/            Settings (get/require/is_set), key registry, env file
+  db/                DbPool, DbError (+ is_transient), with_retry, embedded migrations, TestDb
   domain/            pure types: invoice normalization, Phase/PhaseState/Outcome, cargue id, radicacion states,
                      dataset (Dataset/Invoice/Line + test builders)
   stores/            Diesel stores, one directory (and schema.rs) each:
@@ -66,7 +65,7 @@ src/
   phases/            one directory per command (skeletons): common.rs + the 11 phase modules
   fevxml/            placeholder; the shared XML library (T2) overwrites it
 migrations/          Diesel migrations (foundation: 2026-10-22-0001xx..0008xx)
-tests/               integration tests (cli.rs runs the real binary, foundation.rs uses the lib)
+tests/               integration tests (they use the lib)
 ```
 
 Data flow of a phase:
@@ -85,7 +84,7 @@ Data flow of a phase:
 ```rust
 use tessia::config::Settings;
 
-let settings = Settings::load(cli.config.as_deref())?;      // defaults < file < TESSIA_* env; empty never overrides
+let settings = Settings::load(config_file)?;               // defaults < file < TESSIA_* env; empty never overrides
 settings.get("redis.nt_prefix");                            // Option<&str>, default "nt:"
 settings.get_or("redis.nt_prefix", "nt:");
 settings.is_set("cassandra.api_key");
@@ -101,8 +100,6 @@ let s = Settings::from_pairs([("TESSIA_REDIS_URL", "redis://x")]); // tests
 * **To add a key, append it to `KEYS` in `src/config/keys.rs`** (in your phase's section; `secret: true`
   for credentials/personal data). New infrastructure keys: `database.url`, `database.pool_size`,
   `redis.url`, `redis.nt_prefix`, `cassandra.base_url|api_key|bucket`, `workdir.root`.
-* `facturacion config check [key...]` prints the table of keys (set/unset, secret) and fails when a
-  requested key is missing.
 
 ### `db`
 
@@ -117,7 +114,7 @@ pool.transaction("op name", |conn| { /* unit of work */ Ok(()) })?;          // 
   (4 runs, jittered 50 ms doubling backoff) is what `run`/`transaction` use; closures must be safe to
   repeat and must not have other side effects.
 * `migrate::run_pending(conn)` / `migrate::migrate_url(url)` apply embedded migrations under a
-  Postgres advisory lock (several machines may start at once); idempotent. CLI: `facturacion db migrate`.
+  Postgres advisory lock (several machines may start at once); idempotent.
 * `test_support::TestDb` (see [Writing tests](#writing-tests)).
 
 ### `domain`
@@ -173,7 +170,7 @@ for (invoice, version) in claimed {
   over by passing it as the expectation; the old owner's late `save_outcome` returns `false`.
 * `save_outcome` writes only while the row is `EN_PROGRESO` at the claimed version, bumps `intentos`
   (Go `Record`: attempts continue) and clears the claim. `release` is Go `CancelStarted`.
-* `leases` replace the `.tessia-*.lock` files (e.g. one `diario:<date>` lease for the cron entry point);
+* `leases` replace the `.tessia-*.lock` files (e.g. the single downloader of a date range);
   call `renew` while working longer than the TTL.
 
 ### `storage`
@@ -259,23 +256,19 @@ ctx.artifacts(); ctx.workdir(&cargue_id)?; ctx.claim_options(&cargue_id);
 // tests: AppContext::for_tests(&db).with_nt(Arc::new(MemoryNt::..)).with_objects(Arc::new(MemoryStore::new()))
 ```
 
-`facturacion config check` and `db migrate` run without building the context (no Redis/bucket needed).
-
 ### `phases`
 
 `phases/common.rs` is the contract with `proceso run` (T13):
 
 ```rust
 pub struct PhaseRequest { pub cargue_id: String, pub invoices: Option<Vec<String>>, pub workers: Option<usize> }
-pub struct PhaseReport { pub outcomes: Vec<InvoiceOutcome>, pub skipped: Vec<(String, String)> } // .counters(), .summary()
+pub struct PhaseReport { pub outcomes: Vec<InvoiceOutcome>, pub skipped: Vec<(String, String)> }
 pub fn run_phase(ctx: &AppContext, req: &PhaseRequest) -> anyhow::Result<PhaseReport>;   // in each phase module
-pub fn run(ctx: &AppContext, args: Args) -> anyhow::Result<()>;                           // command line entry
 ```
 
 `fev` exposes `run_verificar_phase`; `convenio_descargar` and `proceso` have no
-`run_phase`. `CommonArgs` (`--cargue`, `--invoices a,b`, `--workers N`) can be flattened into a phase's
-clap `Args`. Each module's `cli.rs` already defines `Args` (struct, or struct + `Command` enum for
-`fev verificar`, `cuv generar`, `radicacion run`, ...) and is wired in `crate::cli`.
+`run_phase`. The window reaches the phases through the API and the jobs (`src/jobs`), which call these
+functions directly; there is no command-line layer.
 
 ## Dataset store
 
@@ -536,8 +529,6 @@ assert_eq!(server.requests()[0].header("authorization"), None);
 * Redis tests: use a random key prefix and delete it afterwards (see `nt/redis_nt.rs`).
 * Racing tests: use `std::sync::Barrier` and assert that only one owner wins (see
   `stores/proceso/tests.rs`).
-* `tests/cli.rs` shows how to run the real binary (`env!("CARGO_BIN_EXE_facturacion")`) with an explicit
-  environment.
 
 ## Conventions
 
@@ -570,6 +561,5 @@ From S1/S2 (scope) and S3-S6 (design):
   names that a copied Go env file may still list).
 * The xlsx/SQLite NT load and the `nota_tecnica_*` tables: the NT comes from Redis, read-only.
 * `tessia.log` and the legacy log retirement; the live `proceso` panel and trace files.
-* Not part of the foundation (owned by later tasks): TLS leaf pinning, and the `diario` (previous-day
-  cron) entry point, which is new behavior (Wave 3). The dataset tables are the
+* Not part of the foundation (owned by later tasks): TLS leaf pinning. The dataset tables are the
   [Dataset store](#dataset-store) (task T1b).

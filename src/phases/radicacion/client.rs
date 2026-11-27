@@ -160,6 +160,7 @@ impl MutualSerClient {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// Replaces the clock (tests).
     #[must_use]
     pub fn with_clock(mut self, now: impl Fn() -> DateTime<Utc> + Send + Sync + 'static) -> Self {
@@ -167,6 +168,7 @@ impl MutualSerClient {
         self
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// Replaces the id generator (tests).
     #[must_use]
     pub fn with_ids(mut self, new_id: impl Fn() -> String + Send + Sync + 'static) -> Self {

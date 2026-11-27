@@ -122,6 +122,7 @@ pub struct VerificarRun {
 }
 
 impl VerificarRun {
+    #[cfg(any(test, feature = "test-support"))]
     /// Invoices that are not `OK`: the command exits non-zero when this is > 0.
     pub fn mismatches(&self) -> usize {
         self.different + self.no_xml
