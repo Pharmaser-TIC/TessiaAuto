@@ -106,11 +106,6 @@ pub fn register(ctx: &AppContext, resolved: Resolved) -> Result<LoadedCsv> {
     })
 }
 
-/// [`resolve_source`] followed by [`register`].
-pub fn load_source(ctx: &AppContext, argument: &str) -> Result<LoadedCsv> {
-    register(ctx, resolve_source(ctx, argument)?)
-}
-
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }

@@ -75,7 +75,6 @@ pub mod pipeline;
 pub mod run;
 pub mod runner;
 pub mod seed;
-pub mod stdio;
 pub mod steps;
 pub mod supply;
 

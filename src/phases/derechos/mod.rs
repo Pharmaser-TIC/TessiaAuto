@@ -103,6 +103,7 @@ pub struct Execution {
     pub failure: Option<DerechosError>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// Runs the phase for the invoices of `req` (called by `proceso run`). The
 /// stored outcomes are in the report; a failure reported after saving (an
 /// authentication stop or the validator-down alert) is the returned

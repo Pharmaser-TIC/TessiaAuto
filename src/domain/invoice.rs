@@ -27,6 +27,7 @@ pub fn valid_invoice(s: &str) -> bool {
     INVOICE_RE.is_match(s)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// Extracts the invoice number from a step file name such as `FEV1_XML_PDF.zip`,
 /// `FEV1.json`, `FEV1.txt` or `CRC_<nit>_FEV1.zip`.
 pub fn invoice_from_file_name(name: &str, nit: &str) -> Option<String> {

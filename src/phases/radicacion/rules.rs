@@ -171,6 +171,7 @@ pub fn initial_success_message(msg: &str) -> bool {
     )
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// The step 2 ministry validation failure, which allows re-sending the TXT
 /// without re-sending step 1.
 pub fn cuv_not_ministry_compliant(detail: &str) -> bool {
@@ -190,6 +191,7 @@ pub fn txt_has_cuv(content: &[u8]) -> bool {
     text.contains("CUV") && contains_any(&text, &["YA SE ENCUENTRA", "YA EXISTE", "VALIDADO"])
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// The valid CUV found in a CUV TXT.
 pub fn txt_cuv(content: &[u8]) -> Option<String> {
     let value = serde_json::from_slice::<Value>(content).ok()?;

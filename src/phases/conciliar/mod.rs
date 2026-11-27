@@ -28,6 +28,4 @@ mod plan_tests;
 #[cfg(test)]
 mod rules_tests;
 
-pub use run::{
-    ConciliarOptions, Execution, lease_name, run_phase, run_phase_detailed, run_request,
-};
+pub use run::{ConciliarOptions, Execution, lease_name, run_phase_detailed, run_request};

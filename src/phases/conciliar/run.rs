@@ -134,13 +134,6 @@ impl Execution {
     }
 }
 
-/// `proceso run` entry point: no follow-up, no printing (the lines are in
-/// [`run_phase_detailed`]'s result). A run with unreconciled invoices is not an
-/// error here; use [`run_phase_detailed`] to read [`Execution::incomplete`].
-pub fn run_phase(ctx: &AppContext, req: &PhaseRequest) -> Result<PhaseReport> {
-    Ok(run_phase_detailed(ctx, req, &ConciliarOptions::for_proceso())?.report)
-}
-
 /// [`run_phase`] with explicit options and the full [`Execution`].
 pub fn run_phase_detailed(
     ctx: &AppContext,

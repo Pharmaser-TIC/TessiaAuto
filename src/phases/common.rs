@@ -15,7 +15,9 @@
 //!    over: drop the result;
 //! 5. return the outcomes that were stored.
 
-use crate::domain::{Outcome, PhaseState};
+use crate::domain::Outcome;
+#[cfg(any(test, feature = "test-support"))]
+use crate::domain::PhaseState;
 
 /// What the orchestrator asks of a phase.
 #[derive(Debug, Clone, Default)]
@@ -50,6 +52,7 @@ pub struct InvoiceOutcome {
     pub outcome: Outcome,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// Counters of a phase run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counters {
@@ -83,6 +86,7 @@ impl PhaseReport {
         self.skipped.push((invoice.to_owned(), reason.to_owned()));
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn counters(&self) -> Counters {
         let mut counters = Counters {
             skipped: self.skipped.len(),
@@ -100,6 +104,7 @@ impl PhaseReport {
         counters
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// One Spanish summary line for the end of a command.
     pub fn summary(&self) -> String {
         let c = self.counters();
@@ -114,6 +119,7 @@ impl PhaseReport {
         )
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// True when any invoice failed (the command should exit non-zero only
     /// when its Go counterpart does; most phases keep FAILED as data).
     pub fn has_failures(&self) -> bool {

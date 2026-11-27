@@ -14,7 +14,7 @@ use tessia::domain::{Phase, PhaseState};
 use tessia::nt::{MemoryNt, NtRow};
 use tessia::phases::common::PhaseRequest;
 use tessia::phases::convenio_preparar::{
-    PrepareRequest, commit_preparation, plan_preparation, run_phase, summary_of,
+    PrepareRequest, commit_preparation, plan_preparation, run_phase,
 };
 use tessia::stores::parametros::Parametros;
 use tessia::testing::{MockResponse, MockServer};
@@ -139,14 +139,14 @@ fn a_local_csv_is_registered_prepared_and_stored() {
 
     assert_eq!(plan.nt_version, "2026-10");
     assert_eq!(plan.nt_entries, 1, "only the catalog rows the CSV names");
-    let summary = summary_of(&plan);
+    let result = &plan.result;
     assert_eq!(
-        summary[0],
-        format!("convenio: {ID}.csv (load {ID}, 2026-10-21..2026-10-21)")
-    );
-    assert_eq!(
-        summary[2],
-        "lines read=6 skipped=0 | invoices prepared=1 excluded=3 manual_review=1 | medicines=1 other services=0 copay lines=0"
+        (
+            result.invoices.len(),
+            result.excluded.len(),
+            result.manual_review.len()
+        ),
+        (1, 3, 1)
     );
     commit_preparation(&ctx, &plan).expect("commit");
 
@@ -417,12 +417,6 @@ fn finished_invoices_never_consume_the_limit() {
     );
     assert_eq!(plan.result.stats.finished, 1);
     assert_eq!(plan.result.stats.ignored, 1);
-    let lines = summary_of(&plan);
-    assert!(lines.contains(&"already finished (not counted in --limit): 1".to_owned()));
-    assert!(
-        lines
-            .contains(&"limit: 2/2 prepared (evaluated 2, excluded 0, manual_review 0)".to_owned())
-    );
     assert_eq!(plan.result.remaining, ["EVS4"]);
 }
 

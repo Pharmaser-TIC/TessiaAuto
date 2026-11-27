@@ -53,6 +53,7 @@ impl PhaseConcurrency {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// How many invoices may run at once right now.
     pub fn limit(&self) -> usize {
         self.lock().current

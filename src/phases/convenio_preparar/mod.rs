@@ -28,29 +28,19 @@ mod prepare_tests;
 pub mod run;
 pub mod source;
 pub mod subplan;
-pub mod summary;
 pub mod xlsx;
 
+#[cfg(any(test, feature = "test-support"))]
 use anyhow::Result;
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::context::AppContext;
+#[cfg(any(test, feature = "test-support"))]
 use crate::phases::common::{PhaseReport, PhaseRequest};
 
 pub use run::{Plan, PrepareRequest, commit_preparation, plan_preparation};
 
-/// The console summary of a plan.
-pub fn summary_of(plan: &Plan) -> Vec<String> {
-    summary::summary_lines(&summary::SummaryInput {
-        csv_name: &plan.load.name,
-        load: &plan.load,
-        nt_version: &plan.nt_version,
-        nt_entries: plan.nt_entries,
-        lines_read: plan.csv.lines.len(),
-        lines_skipped: plan.csv.skipped,
-        result: &plan.result,
-    })
-}
-
+#[cfg(any(test, feature = "test-support"))]
 /// Runs the phase for the invoices of `req` (called by `proceso run`): the
 /// cargue `req.cargue_id` must exist; `req.invoices` restricts (and forces)
 /// the preparation like `--invoices`. The report lists the stored outcomes.

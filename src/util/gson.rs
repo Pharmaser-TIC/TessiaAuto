@@ -55,11 +55,13 @@ impl Json {
         Json::Object(members.into_iter().map(|(k, v)| (k.into(), v)).collect())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// Builds an array.
     pub fn array<I: IntoIterator<Item = Json>>(items: I) -> Json {
         Json::Array(items.into_iter().collect())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// A decimal amount written verbatim, like a Java `BigDecimal`.
     pub fn decimal(value: rust_decimal::Decimal) -> Json {
         Json::Number(value.to_string())

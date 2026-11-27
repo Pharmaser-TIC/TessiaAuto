@@ -34,6 +34,7 @@ use std::fmt::Write as _;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Timelike, Utc};
+#[cfg(any(test, feature = "test-support"))]
 use serde::Deserialize;
 
 use super::service::{AffiliateRights, InvoiceResult};
@@ -154,6 +155,7 @@ pub fn publish(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// A result file as the readers (`rips generar`) see it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StoredResult {
@@ -167,6 +169,7 @@ pub struct StoredResult {
     pub diferencias_csv: Vec<String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StoredAffiliate {
     pub tipo_documento: String,
@@ -177,6 +180,7 @@ pub struct StoredAffiliate {
     pub tipo_documento_consultado: Option<String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StoredRights {
     pub tipo_usuario: String,
@@ -186,11 +190,13 @@ pub struct StoredRights {
     pub fecha_nacimiento: String,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// Decodes a result file.
 pub fn parse(bytes: &[u8]) -> Result<StoredResult> {
     serde_json::from_slice(bytes).context("archivo de resultado de derechos inválido")
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// The invoice's published result, `None` when it has none.
 pub fn read(artifacts: &Artifacts, cargue_id: &str, invoice: &str) -> Result<Option<StoredResult>> {
     let rel = rel_path(invoice);

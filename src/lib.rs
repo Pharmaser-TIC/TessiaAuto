@@ -17,5 +17,4 @@ pub mod storage;
 pub mod stores;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-pub mod timing;
 pub mod util;
