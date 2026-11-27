@@ -243,6 +243,7 @@ impl CpscanHttp {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// A plain client (tests).
     pub fn plain(client: Client) -> Self {
         Self {

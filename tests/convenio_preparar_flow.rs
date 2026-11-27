@@ -14,7 +14,7 @@ use tessia::domain::{Phase, PhaseState};
 use tessia::nt::{MemoryNt, NtRow};
 use tessia::phases::common::PhaseRequest;
 use tessia::phases::convenio_preparar::{
-    Args, PrepareRequest, commit_preparation, plan_preparation, run, run_phase, summary_of,
+    PrepareRequest, commit_preparation, plan_preparation, run_phase,
 };
 use tessia::stores::parametros::Parametros;
 use tessia::testing::{MockResponse, MockServer};
@@ -139,14 +139,14 @@ fn a_local_csv_is_registered_prepared_and_stored() {
 
     assert_eq!(plan.nt_version, "2026-10");
     assert_eq!(plan.nt_entries, 1, "only the catalog rows the CSV names");
-    let summary = summary_of(&plan);
+    let result = &plan.result;
     assert_eq!(
-        summary[0],
-        format!("convenio: {ID}.csv (load {ID}, 2026-10-21..2026-10-21)")
-    );
-    assert_eq!(
-        summary[2],
-        "lines read=6 skipped=0 | invoices prepared=1 excluded=3 manual_review=1 | medicines=1 other services=0 copay lines=0"
+        (
+            result.invoices.len(),
+            result.excluded.len(),
+            result.manual_review.len()
+        ),
+        (1, 3, 1)
     );
     commit_preparation(&ctx, &plan).expect("commit");
 
@@ -417,12 +417,6 @@ fn finished_invoices_never_consume_the_limit() {
     );
     assert_eq!(plan.result.stats.finished, 1);
     assert_eq!(plan.result.stats.ignored, 1);
-    let lines = summary_of(&plan);
-    assert!(lines.contains(&"already finished (not counted in --limit): 1".to_owned()));
-    assert!(
-        lines
-            .contains(&"limit: 2/2 prepared (evaluated 2, excluded 0, manual_review 0)".to_owned())
-    );
     assert_eq!(plan.result.remaining, ["EVS4"]);
 }
 
@@ -557,19 +551,21 @@ fn an_empty_nt_is_an_error() {
 fn run_phase_prepares_an_existing_cargue_and_reports_the_outcomes() {
     let (_db, ctx, dir) = setup();
     let path = write_csv(dir.path(), &format!("{ID}.csv"), &mixed_csv());
-    // Register the cargue through the command (with a cap), then let the
-    // orchestrator entry point re-run it with the stored parameters.
+    // Register the cargue (with a cap), then let the orchestrator entry point
+    // re-run it with the stored parameters.
     let mut stored = Parametros::defaults("250000".parse().expect("amount"));
     stored.automatic_subplans = vec!["EVENTO POS".into()];
     ctx.parametros().set(&stored).expect("params");
-    run(
+    let plan = plan_preparation(
         &ctx,
-        Args {
-            source: Some(path.to_string_lossy().into_owned()),
-            ..Args::default()
+        &PrepareRequest {
+            source: path.to_string_lossy().into_owned(),
+            ..PrepareRequest::default()
         },
+        None,
     )
-    .expect("run");
+    .expect("plan");
+    commit_preparation(&ctx, &plan).expect("commit");
     let report = run_phase(
         &ctx,
         &PhaseRequest {
@@ -592,27 +588,8 @@ fn run_phase_prepares_an_existing_cargue_and_reports_the_outcomes() {
 }
 
 #[test]
-fn bad_arguments_are_reported() {
+fn a_missing_source_is_reported() {
     let (_db, ctx, _dir) = setup();
-    let negative = run(
-        &ctx,
-        Args {
-            source: Some("x".into()),
-            limit: -1,
-            ..Args::default()
-        },
-    );
-    assert_eq!(
-        negative.expect_err("negative").to_string(),
-        "--limit must be >= 0"
-    );
-    assert!(run(&ctx, Args::default()).is_err(), "a source is required");
-    let both = Args {
-        source: Some("a".into()),
-        cargue: Some("b".into()),
-        ..Args::default()
-    };
-    assert!(run(&ctx, both).is_err());
     let missing = plan_preparation(
         &ctx,
         &PrepareRequest {

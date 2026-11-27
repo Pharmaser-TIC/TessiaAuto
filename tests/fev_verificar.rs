@@ -325,10 +325,8 @@ fn an_invoice_claimed_by_another_machine_is_skipped() {
 }
 
 mod dataset {
-    use clap::Parser;
-    use tessia::cli::{Cli, Commands};
     use tessia::domain::dataset::test_support::{DatasetBuilder, InvoiceBuilder};
-    use tessia::phases::fev::{self, run_verificar_phase};
+    use tessia::phases::fev::run_verificar_phase;
     use tessia::stores::dataset::test_support::seed_cargue;
 
     use super::*;
@@ -342,15 +340,6 @@ mod dataset {
             .excluded("FEV2", "SIN_PRECIO")
             .build();
         ctx.dataset().replace(&ds, false).expect("replace");
-    }
-
-    fn parse(args: &[&str]) -> fev::Args {
-        let mut argv = vec!["facturacion", "fev", "verificar", "--cargue", CARGUE];
-        argv.extend_from_slice(args);
-        match Cli::try_parse_from(argv).expect("parse").command {
-            Commands::Fev(args) => args,
-            other => panic!("not fev: {other:?}"),
-        }
     }
 
     #[test]
@@ -407,21 +396,5 @@ mod dataset {
         let ctx = AppContext::for_tests(&db);
         let err = run_verificar_phase(&ctx, &PhaseRequest::new(CARGUE)).expect_err("no dataset");
         assert!(err.to_string().contains("convenio preparar"), "{err}");
-    }
-
-    #[test]
-    fn the_command_exits_non_zero_when_an_invoice_is_not_ok() {
-        let db = TestDb::new();
-        let ctx = AppContext::for_tests(&db);
-        seed(&ctx);
-        store_dataset(&ctx, &db);
-
-        let err = fev::run(&ctx, parse(&[])).expect_err("mismatches");
-        assert_eq!(
-            err.to_string(),
-            "2 factura(s) sin valor coincidente entre XML y convenio"
-        );
-        // Only the matching invoice: success.
-        assert!(fev::run(&ctx, parse(&["--invoices", "fev1"])).is_ok());
     }
 }

@@ -35,10 +35,6 @@ static PAGO_RES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
-pub(crate) fn prepaid_re() -> &'static Regex {
-    &PREPAID_RE
-}
-
 /// `eliminarCamposPagoSectorSalud`: drops the COPAGO / CUOTA_MODERADORA /
 /// PAGOS_COMPARTIDOS / ANTICIPOS blocks together with the preceding whitespace.
 pub(crate) fn eliminar_campos_pago(s: &str) -> String {

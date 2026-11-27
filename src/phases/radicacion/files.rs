@@ -156,6 +156,7 @@ impl ArtifactFiles {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// The workdir the files are fetched into.
     pub fn workdir(&self) -> &Workdir {
         &self.workdir

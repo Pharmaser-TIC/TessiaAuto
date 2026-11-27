@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 
 use super::events::Mode;
 use super::pipeline::DEFAULT_BREAKER;
@@ -116,70 +116,9 @@ impl RunConfig {
     }
 }
 
-/// Parses a Go duration (`1m`, `30s`, `1h30m`, `250ms`, `0`).
-pub fn parse_duration(flag: &str, text: &str) -> Result<Duration> {
-    let text = text.trim();
-    if text == "0" {
-        return Ok(Duration::ZERO);
-    }
-    if text.starts_with('-') {
-        bail!("{flag} must be >= 0");
-    }
-    if text.is_empty() {
-        bail!("{flag}: invalid duration \"\"");
-    }
-    let mut total = Duration::ZERO;
-    let mut rest = text.strip_prefix('+').unwrap_or(text);
-    while !rest.is_empty() {
-        let digits = rest
-            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
-            .unwrap_or(rest.len());
-        let (number, tail) = rest.split_at(digits);
-        let unit_len = tail
-            .find(|c: char| c.is_ascii_digit() || c == '.')
-            .unwrap_or(tail.len());
-        let (unit, next) = tail.split_at(unit_len);
-        let value: f64 = number
-            .parse()
-            .map_err(|_| anyhow!("{flag}: invalid duration {text:?}"))?;
-        let seconds = match unit {
-            "ns" => 1e-9,
-            "us" | "µs" => 1e-6,
-            "ms" => 1e-3,
-            "s" => 1.0,
-            "m" => 60.0,
-            "h" => 3600.0,
-            _ => bail!("{flag}: invalid duration {text:?} (unit {unit:?})"),
-        };
-        total += Duration::from_secs_f64(value * seconds);
-        rest = next;
-    }
-    Ok(total)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn go_durations_parse() {
-        let d = |t: &str| parse_duration("--x", t).expect(t);
-        assert_eq!(d("1m"), Duration::from_secs(60));
-        assert_eq!(d("30s"), Duration::from_secs(30));
-        assert_eq!(d("1h30m"), Duration::from_secs(5400));
-        assert_eq!(d("250ms"), Duration::from_millis(250));
-        assert_eq!(d("0"), Duration::ZERO);
-        assert_eq!(d("1.5s"), Duration::from_millis(1500));
-        assert!(
-            parse_duration("--x", "-5s")
-                .expect_err("neg")
-                .to_string()
-                .contains(">= 0")
-        );
-        assert!(parse_duration("--x", "5").is_err());
-        assert!(parse_duration("--x", "abc").is_err());
-        assert!(parse_duration("--x", "").is_err());
-    }
 
     #[test]
     fn the_cargue_id_is_the_csv_stem_or_the_id() {

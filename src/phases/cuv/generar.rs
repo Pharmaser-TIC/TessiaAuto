@@ -4,8 +4,7 @@
 //!
 //! Per invoice, in this order: gate (only without `--invoices`), claim in
 //! `proceso_estado` (machines split the work), the lease
-//! [`super::lease_name`] (excludes `fev ajustar` and other machines on the same
-//! invoice), plan (skip codes, XML source, `prepare_ministerio`, payload), write
+//! [`super::lease_name`] (excludes other machines on the same invoice), plan (skip codes, XML source, `prepare_ministerio`, payload), write
 //! the adjusted XML and ZIP back, send, interpret, sweep, publish, store the
 //! outcome. Files live in the bucket (`Artifacts`); nothing touches a fixed
 //! local folder.
@@ -439,7 +438,7 @@ fn work(run: &Run<'_>, target: &Target, version: i64) -> Finished {
         Ok(None) => {
             give_back();
             return Finished::OtherMachine(format!(
-                "  skip {} {SKIP_OTHER_MACHINE} (otra máquina o `fev ajustar` la está procesando)",
+                "  skip {} {SKIP_OTHER_MACHINE} (otra máquina la está procesando)",
                 target.stem
             ));
         }

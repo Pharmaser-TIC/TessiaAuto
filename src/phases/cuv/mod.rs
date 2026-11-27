@@ -1,6 +1,5 @@
-//! `cuv generar` and `cuv barrer`: CUV generation against SISPRO and the sweep
-//! of its TXT answers (Go `cmd_cuv.go`, `cmd_cuv_barrer.go`, `internal/cuv`,
-//! `internal/adapters/sispro`).
+//! `cuv generar`: CUV generation against SISPRO and the sweep of its TXT
+//! answers (Go `cmd_cuv.go`, `internal/cuv`, `internal/adapters/sispro`).
 //!
 //! * Inputs, from the cargue's artifacts: `<F>.json` (`rips generar`), `<F>.xml`
 //!   or the `<F>.xml` entry of `XML/<F>_XML_PDF.zip` (`thefactory descargar`).
@@ -12,15 +11,12 @@
 //! * **Cross-host exclusion per invoice** (replaces Go's `.tessia-cuv` folder
 //!   lock): the lease named [`lease_name`] (`cuv:<cargue>:<invoice>`, invoice
 //!   normalized, TTL [`LEASE_TTL`]) is held while an invoice is planned, its
-//!   XML/ZIP rewritten, sent and stored. `fev ajustar` rewrites the same XML and
-//!   ZIP and takes the same lease name, so the two phases never edit one invoice
-//!   at the same time, on one machine or on several.
+//!   XML/ZIP rewritten, sent and stored, so two machines never edit one invoice
+//!   at the same time.
 //! * `proceso run` calls [`run_phase`] (own alert) or, to judge a whole run,
 //!   [`run_phase_tallied`] with one [`TokenTally`] and [`check_alert`] at the end.
 
 pub mod availability;
-pub mod barrer;
-pub mod cli;
 pub mod generar;
 mod jsontree;
 pub mod model;
@@ -37,7 +33,6 @@ use crate::context::AppContext;
 use crate::phases::common::{PhaseReport, PhaseRequest};
 
 pub use availability::{TokenFailureError, TokenPolicy, TokenStats, TokenTally};
-pub use cli::Args;
 pub use generar::{Execution, MissingRipsJsonError, check_alert, resolve_policy};
 pub use sispro::{SisproClient, SisproError, SisproOptions};
 pub use txt::txt_has_cuv;
@@ -49,62 +44,16 @@ pub use txt::txt_has_cuv;
 /// TTL (30 min).
 pub const LEASE_TTL: Duration = Duration::from_secs(30 * 60);
 
-/// Report reason of an invoice another machine (or `fev ajustar`) is working on.
+/// Report reason of an invoice another machine is working on.
 pub const SKIP_OTHER_MACHINE: &str = "EN_PROCESO_OTRA_MAQUINA";
 
 /// The lease that excludes other workers from one invoice of a cargue:
-/// `cuv:<cargue_id>:<invoice>` with the normalized invoice. `fev ajustar` uses
-/// the same name.
+/// `cuv:<cargue_id>:<invoice>` with the normalized invoice.
 pub fn lease_name(cargue_id: &str, invoice: &str) -> String {
     format!(
         "cuv:{cargue_id}:{}",
         crate::domain::normalize_invoice(invoice)
     )
-}
-
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    match args.command {
-        cli::Command::Generar(generar) => run_generar(ctx, &generar),
-        cli::Command::Barrer(barrer) => run_barrer(ctx, &barrer),
-    }
-}
-
-fn run_generar(ctx: &AppContext, args: &cli::GenerarArgs) -> Result<()> {
-    let request = args.common.to_request()?;
-    let tally = TokenTally::new();
-    let execution = generar::execute(ctx, &request, &tally)?;
-    for line in &execution.lines {
-        println!("{line}");
-    }
-    println!(
-        "cuv: ready={} skipped={}",
-        execution.submitted,
-        execution.report.skipped.len()
-    );
-    println!(
-        "cuv: with_cuv={} without_cuv={}",
-        execution.with_cuv,
-        execution.submitted.saturating_sub(execution.with_cuv)
-    );
-    println!("{}", execution.report.summary());
-    conclude(ctx, execution, Some(&tally)).map(|_| ())
-}
-
-fn run_barrer(ctx: &AppContext, args: &cli::BarrerArgs) -> Result<()> {
-    let cargue = args
-        .cargue
-        .as_deref()
-        .filter(|c| !c.trim().is_empty())
-        .ok_or_else(|| anyhow!("falta --cargue <ID> (el nombre del CSV sin extensión)"))?;
-    let execution = barrer::execute(ctx, cargue)?;
-    for line in &execution.lines {
-        println!("{line}");
-    }
-    match generar::join_errors(&execution.errors) {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
 }
 
 /// Turns an [`Execution`] into the result of a run: the per-invoice

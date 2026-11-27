@@ -18,7 +18,6 @@
 
 pub mod amount;
 pub mod catalog;
-pub mod cli;
 pub mod csv;
 pub mod mipres;
 pub mod mipres_client;
@@ -29,57 +28,19 @@ mod prepare_tests;
 pub mod run;
 pub mod source;
 pub mod subplan;
-pub mod summary;
 pub mod xlsx;
 
-use anyhow::{Result, bail};
+#[cfg(any(test, feature = "test-support"))]
+use anyhow::Result;
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::context::AppContext;
+#[cfg(any(test, feature = "test-support"))]
 use crate::phases::common::{PhaseReport, PhaseRequest};
 
-pub use cli::Args;
 pub use run::{Plan, PrepareRequest, commit_preparation, plan_preparation};
 
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    if args.limit < 0 {
-        bail!("--limit must be >= 0");
-    }
-    let source = match (&args.source, &args.cargue) {
-        (Some(source), None) | (None, Some(source)) => source.clone(),
-        _ => bail!("uso: facturacion convenio preparar [opciones] <csv|cargue>"),
-    };
-    let request = PrepareRequest {
-        source,
-        max_amount: args.monto_maximo,
-        only: args.invoices,
-        limit: usize::try_from(args.limit).unwrap_or_default(),
-    };
-    let plan = plan_preparation(ctx, &request, None)?;
-    for line in summary_of(&plan) {
-        println!("{line}");
-    }
-    commit_preparation(ctx, &plan)?;
-    println!(
-        "{}",
-        summary::saved_line(plan.result.invoices.len(), &plan.load.id)
-    );
-    Ok(())
-}
-
-/// The console summary of a plan.
-pub fn summary_of(plan: &Plan) -> Vec<String> {
-    summary::summary_lines(&summary::SummaryInput {
-        csv_name: &plan.load.name,
-        load: &plan.load,
-        nt_version: &plan.nt_version,
-        nt_entries: plan.nt_entries,
-        lines_read: plan.csv.lines.len(),
-        lines_skipped: plan.csv.skipped,
-        result: &plan.result,
-    })
-}
-
+#[cfg(any(test, feature = "test-support"))]
 /// Runs the phase for the invoices of `req` (called by `proceso run`): the
 /// cargue `req.cargue_id` must exist; `req.invoices` restricts (and forces)
 /// the preparation like `--invoices`. The report lists the stored outcomes.

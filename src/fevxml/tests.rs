@@ -130,30 +130,6 @@ fn validate_rules() {
 }
 
 #[test]
-fn golden_cucon_and_cuota() {
-    let m = manifest("fevajuste/manifest.json");
-    let cucon_value = s(&m, "cucon_valor");
-    for c in m["xml"].as_array().unwrap() {
-        let name = s(c, "name");
-        let input = read(&format!("fevajuste/{}", s(c, "input")));
-
-        let (got, res) = cucon(&input, cucon_value);
-        assert_eq!(res.as_str(), s(c, "cucon_resultado"), "{name}");
-        assert_bytes(&got, &read(&format!("fevajuste/{}", s(c, "cucon"))));
-
-        let r = cuota_moderadora(&input, "<ARCHIVO>");
-        assert_eq!(
-            r.changed,
-            c["cuota_modificado"].as_bool().unwrap(),
-            "{name}"
-        );
-        let warnings: String = r.warnings.iter().map(|w| format!("{w}\n")).collect();
-        assert_eq!(warnings, s(c, "cuota_salida"), "{name}");
-        assert_bytes(&r.xml, &read(&format!("fevajuste/{}", s(c, "cuota"))));
-    }
-}
-
-#[test]
 fn golden_total() {
     let m = manifest("fevajuste/manifest.json");
     for c in m["total"].as_array().unwrap() {
@@ -175,24 +151,6 @@ fn golden_numero_convenio() {
             Some(want) => assert_eq!(got.unwrap().to_string(), want, "{:?}", s(c, "input")),
         }
     }
-}
-
-/// The cuota tool only touches XMLs with an anticipo to legalize; the download
-/// edits already removed ANTICIPOS.
-#[test]
-fn cuota_after_download_is_stable() {
-    let input = read("fevajuste/xml/anticipo.cuota.xml");
-    let r = cuota_moderadora(&input, "x");
-    assert_bytes(&r.xml, &input);
-    assert!(String::from_utf8_lossy(&input).contains("schemeID=\"04\""));
-}
-
-#[test]
-fn cucon_with_legacy_value_reports_modificado_with_same_bytes() {
-    let input = b"<AdditionalInformation><Name>NUMERO_CONTRATO</Name><Value>22382</Value></AdditionalInformation>";
-    let (got, res) = cucon(input, "22382");
-    assert_eq!(res, ContratoResult::Modificado);
-    assert_bytes(&got, input);
 }
 
 #[test]
@@ -273,141 +231,18 @@ fn invoice_lines_plain_invoice_and_errors() {
 }
 
 #[test]
-fn format_and_storage_amounts() {
-    for (input, display, storage) in [
-        ("1,234.50", "1234.5", "1234.50"),
-        ("700.00", "700", "700.00"),
-        ("0", "0", "0.00"),
-        ("12.345", "12.345", "12.35"),
-        ("1000", "1000", "1000.00"),
+fn storage_amounts_have_two_decimals_half_up() {
+    for (input, storage) in [
+        ("1,234.50", "1234.50"),
+        ("700.00", "700.00"),
+        ("0", "0.00"),
+        ("12.345", "12.35"),
+        ("1000", "1000.00"),
     ] {
         let xml = format!(
             "<AttachedDocument><cbc:Description><![CDATA[<Invoice><cac:LegalMonetaryTotal><cbc:PayableAmount currencyID=\"COP\">{input}</cbc:PayableAmount></cac:LegalMonetaryTotal></Invoice>]]></cbc:Description></AttachedDocument>"
         );
         let d = read_total(xml.as_bytes()).unwrap();
-        assert_eq!(format_total(d), display, "{input}");
         assert_eq!(storage_amount(d), storage, "{input}");
     }
-}
-
-fn attached(amount: &str) -> Vec<u8> {
-    format!(
-        "<AttachedDocument xmlns:cac=\"c\" xmlns:cbc=\"b\"><cbc:Description><![CDATA[<Invoice><cac:LegalMonetaryTotal><cbc:PayableAmount currencyID=\"COP\">{amount}</cbc:PayableAmount></cac:LegalMonetaryTotal></Invoice>]]></cbc:Description></AttachedDocument>"
-    )
-    .into_bytes()
-}
-
-fn write(path: &std::path::Path, data: &[u8]) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, data).unwrap();
-}
-
-#[test]
-fn invoice_total_rules() {
-    let zip_with = |entries: &[(&str, &[u8])]| {
-        // Build through the public helpers: the PDF first, then the last entry.
-        let (name, data) = entries[entries.len() - 1];
-        build_xml_pdf_zip("F1.pdf", b"%PDF", name, data, None).unwrap()
-    };
-    let check = |setup: &dyn Fn(&std::path::Path), state: XmlState, display: &str, is_zip: bool| {
-        let dir = tempfile::tempdir().unwrap();
-        setup(dir.path());
-        let (file, total, got) = invoice_total(dir.path(), "F1");
-        assert_eq!(got, state);
-        if state == XmlState::Missing {
-            assert!(file.is_none());
-            return;
-        }
-        let f = file.unwrap();
-        assert_eq!((f.is_zip, f.size > 0), (is_zip, true));
-        if state == XmlState::Found {
-            assert_eq!(format_total(total.unwrap()), display);
-        }
-    };
-    check(
-        &|d| {
-            write(
-                &d.join("XML/F1_XML_PDF.zip"),
-                &zip_with(&[("F1.xml", &attached("1,234.50"))]),
-            )
-        },
-        XmlState::Found,
-        "1234.5",
-        true,
-    );
-    check(
-        &|d| {
-            write(
-                &d.join("ZIP/F1_XML_PDF.zip"),
-                &zip_with(&[("a.xml", &attached("700.00"))]),
-            )
-        },
-        XmlState::Found,
-        "700",
-        true,
-    );
-    check(
-        &|d| write(&d.join("F1.xml"), &attached("90000.10")),
-        XmlState::Found,
-        "90000.1",
-        false,
-    );
-    check(
-        &|d| {
-            write(
-                &d.join("XML/F1_XML_PDF.zip"),
-                &zip_with(&[("a.xml", &attached("10"))]),
-            );
-            write(&d.join("F1.xml"), &attached("20"));
-        },
-        XmlState::Found,
-        "10",
-        true,
-    );
-    check(
-        &|d| {
-            write(&d.join("XML/F1_XML_PDF.zip"), b"");
-            write(&d.join("F1.xml"), &attached("20"));
-        },
-        XmlState::Found,
-        "20",
-        false,
-    );
-    check(&|_| {}, XmlState::Missing, "", false);
-    check(
-        &|d| write(&d.join("F1.xml"), b""),
-        XmlState::Missing,
-        "",
-        false,
-    );
-    check(
-        &|d| write(&d.join("F1.xml"), b"<Invoice/>"),
-        XmlState::Unparsable,
-        "",
-        false,
-    );
-    check(
-        &|d| {
-            // A ZIP without an xml entry does not fall back to the loose xml.
-            let z = build_xml_pdf_zip("F1.pdf", b"%PDF", "F1.txt", b"x", None).unwrap();
-            write(&d.join("XML/F1_XML_PDF.zip"), &z);
-            write(&d.join("F1.xml"), &attached("20"));
-        },
-        XmlState::Unparsable,
-        "",
-        true,
-    );
-    check(
-        &|d| write(&d.join("XML/F1_XML_PDF.zip"), b"not a zip"),
-        XmlState::Unparsable,
-        "",
-        true,
-    );
-}
-
-#[test]
-fn zip_path_helpers() {
-    let paths = xml_pdf_zip_paths(std::path::Path::new("w"), "F1");
-    assert_eq!(paths[0], std::path::Path::new("w/XML/F1_XML_PDF.zip"));
-    assert_eq!(paths[1], std::path::Path::new("w/ZIP/F1_XML_PDF.zip"));
 }

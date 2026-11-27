@@ -21,6 +21,7 @@
 
 mod artifacts;
 mod cassandra;
+#[cfg(any(test, feature = "test-support"))]
 mod memory;
 mod workdir;
 
@@ -28,6 +29,7 @@ use std::path::Path;
 
 pub use artifacts::{Artifacts, content_type_for, object_key, validate_rel_path};
 pub use cassandra::CassandraStore;
+#[cfg(any(test, feature = "test-support"))]
 pub use memory::MemoryStore;
 pub use workdir::{Workdir, layout};
 

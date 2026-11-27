@@ -37,11 +37,3 @@ pub fn migrate_url(url: &str) -> DbResult<Vec<String>> {
     let mut conn = PgConnection::establish(url)?;
     run_pending(&mut conn)
 }
-
-/// Number of migrations embedded in this binary.
-pub fn embedded_count() -> usize {
-    use diesel::migration::MigrationSource;
-    MigrationSource::<diesel::pg::Pg>::migrations(&MIGRATIONS)
-        .map(|m| m.len())
-        .unwrap_or(0)
-}

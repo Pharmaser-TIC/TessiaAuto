@@ -41,7 +41,6 @@
 //! * No dry-run, no confirmation (S1). The hint texts name `facturacion thefactory descargar`.
 
 pub mod assets;
-pub mod cli;
 pub mod cpscan;
 pub mod dataset;
 pub mod decide;
@@ -51,37 +50,13 @@ pub mod render;
 pub mod run;
 pub mod zipfile;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::context::AppContext;
 use crate::phases::common::{PhaseReport, PhaseRequest};
 
-pub use cli::Args;
 pub use input::{SoporteInput, SoporteRow};
 pub use run::{Options, SoporteRun, run_inputs};
-
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    let cli::Command::Generar(generar) = args.command;
-    let req = generar.common.to_request()?;
-    let options = Options {
-        regenerate: generar.regenerar,
-    };
-    let inputs = dataset::load_inputs(ctx, &req)?;
-    let result = run_inputs(ctx, &req, options, inputs)?;
-    for line in &result.lines {
-        println!("{line}");
-    }
-    println!("{}", result.summary_line());
-    if !result.errors.is_empty() {
-        bail!(
-            "soporte: {} factura(s) con error de infraestructura: {}",
-            result.errors.len(),
-            result.errors.join("; ")
-        );
-    }
-    Ok(())
-}
 
 /// Runs the phase for the invoices of `req` (called by `proceso run`; it never regenerates).
 pub fn run_phase(ctx: &AppContext, req: &PhaseRequest) -> Result<PhaseReport> {

@@ -8,7 +8,6 @@
 //! `Convenio_ddMMyyyy_ddMMyyyy.csv`. A lease named after the cargue keeps two
 //! machines from downloading the same range at once.
 
-pub mod cli;
 pub mod client;
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
@@ -19,14 +18,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{Datelike, NaiveDate};
 use sha2::{Digest, Sha256};
 
 use crate::context::AppContext;
 use crate::domain::cargue::{LoadOrigin, load_context};
 use crate::stores::cargues::NewCargue;
 
-pub use cli::Args;
 pub use client::{MedicarClient, MedicarOptions, export_fields, file_name};
 
 /// How long a download holds its lease without a renewal.
@@ -71,24 +69,6 @@ pub struct DownloadOutcome {
     pub sha256: String,
     pub size: u64,
     pub status: DownloadStatus,
-}
-
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    let today = Local::now().date_naive();
-    let (from, to) = resolve_range(
-        args.desde.as_deref(),
-        args.hasta.as_deref(),
-        args.actual,
-        today,
-    )?;
-    let outcome = download_range(ctx, from, to)?;
-    println!(
-        "convenio saved: {} ({})",
-        outcome.cargue_id, outcome.object_key
-    );
-    println!("{}", outcome.status.describe());
-    Ok(())
 }
 
 /// Go's date rules: `--actual` (first of the month through `today`) excludes

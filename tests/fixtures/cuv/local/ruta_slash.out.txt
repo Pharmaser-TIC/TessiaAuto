@@ -1,5 +1,0 @@
-{
-  "RutaArchivos": "/tmp/rips/FVS2000004",
-  "ResultState": true,
-  "NumFactura": "/tmp/rips/FVS2000004"
-}

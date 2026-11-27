@@ -21,7 +21,6 @@
 //! assert!(settings.require(&["database.url"]).is_err());
 //! ```
 
-pub mod cli;
 mod envfile;
 mod keys;
 

@@ -12,7 +12,6 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Result, bail};
 use rust_decimal::Decimal;
 
-use super::ajustar::SKIP_OTHER_MACHINE;
 use super::xmlsrc::XmlSources;
 use crate::context::AppContext;
 use crate::domain::{Outcome, Phase, PhaseState};
@@ -21,6 +20,9 @@ use crate::phases::common::{PhaseReport, PhaseRequest};
 use crate::stores::proceso::ClaimItem;
 use crate::stores::valor_xml::XmlValueUpsert;
 use crate::util::par;
+
+/// Reason stored in `report.skipped` for an invoice another machine is working on.
+pub const SKIP_OTHER_MACHINE: &str = "EN_PROCESO_OTRA_MAQUINA";
 
 /// Default worker threads (Go checked the invoices one after another).
 const DEFAULT_WORKERS: usize = 8;
@@ -120,6 +122,7 @@ pub struct VerificarRun {
 }
 
 impl VerificarRun {
+    #[cfg(any(test, feature = "test-support"))]
     /// Invoices that are not `OK`: the command exits non-zero when this is > 0.
     pub fn mismatches(&self) -> usize {
         self.different + self.no_xml

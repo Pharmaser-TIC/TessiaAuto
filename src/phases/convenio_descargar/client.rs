@@ -151,6 +151,7 @@ impl MedicarOptions {
     }
 
     /// No waiting between attempts (tests): tiny whole-flow and login backoffs.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_fast_retries(mut self) -> Self {
         self.retry_delay = Duration::from_millis(1);

@@ -216,6 +216,7 @@ pub struct Report {
 }
 
 impl Report {
+    #[cfg(any(test, feature = "test-support"))]
     /// One-line report.
     pub fn summary(&self) -> String {
         let mut parts = vec![

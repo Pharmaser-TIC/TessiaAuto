@@ -95,6 +95,7 @@ impl RetryPolicy {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// A policy that never sleeps (tests).
     pub fn instant(max_attempts: u32) -> Self {
         Self {

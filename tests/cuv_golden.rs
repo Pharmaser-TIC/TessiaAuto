@@ -1,7 +1,6 @@
 //! Golden tests of the CUV TXT handling, with the (synthetic) goldens of the Go
 //! port (themselves produced by the Java code): `Response::parse` + `encode`
-//! against Gson, `sweep` against `barrerTxtCuvMinisterioAlFinalizar` and
-//! `sweep_local` against `Vista_ActualizarCUVMinisterioLocal`.
+//! against Gson and `sweep` against `barrerTxtCuvMinisterioAlFinalizar`.
 
 use std::cell::RefCell;
 use std::fs;
@@ -9,7 +8,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use tessia::phases::cuv::model::Response;
-use tessia::phases::cuv::sweep::{sweep, sweep_local};
+use tessia::phases::cuv::sweep::sweep;
 
 fn fixture(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -71,34 +70,6 @@ fn sweep_matches_the_java_final_sweep() {
             assert!(asked.is_empty(), "{name}: no lookup without RVG18");
         } else {
             assert_eq!(asked, [want], "{name}");
-        }
-    }
-}
-
-#[test]
-fn sweep_local_matches_the_java_screen() {
-    let cases = manifest("local.json", "local");
-    assert_eq!(cases.len(), 9);
-    for case in cases {
-        let name = text(&case, "name");
-        let input = read(text(&case, "input"));
-        let asked = RefCell::new(Vec::new());
-        let lookup = |cuv: &str| {
-            asked.borrow_mut().push(cuv.to_owned());
-            Some(4242)
-        };
-        let result = sweep_local(&input, Some(&lookup));
-        match text(&case, "resultado") {
-            "no_json" => assert!(result.expect(name).out.is_none(), "{name}"),
-            "error" => assert!(result.is_err(), "{name}: must be an error"),
-            _ => {
-                let swept = result.expect(name);
-                assert_text(&swept.out.expect("out"), &read(text(&case, "output")), name);
-                let want_cuv = case["cuv"].as_str();
-                assert_eq!(swept.rvg18, want_cuv.is_some(), "{name}");
-                assert_eq!(swept.cuv, want_cuv.unwrap_or(""), "{name}");
-                assert_eq!(asked.borrow().len(), usize::from(swept.rvg18), "{name}");
-            }
         }
     }
 }

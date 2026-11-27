@@ -1,6 +1,12 @@
 //! `rips::encode` against the Java goldens of the Go repository
 //! (`testdata/golden/rips`, produced by running the real legacy model classes
 //! with synthetic values). The expected files are the exact bytes Java wrote.
+//!
+//! One deliberate exception: since `1fdb6a2` ("radicar con el ID de entrega") the
+//! encoder no longer drops an `idMIPRES` that looks like an SSC or starts with
+//! `X`, so in `cases/full.json` those two values (`SSC123`, `x-99`) are written
+//! as they come instead of `null`. That file is no longer what Java wrote for
+//! those two fields; the rest of it, and the other three cases, still are.
 
 use std::fs;
 use std::path::PathBuf;

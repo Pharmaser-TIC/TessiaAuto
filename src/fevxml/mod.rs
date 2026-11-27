@@ -19,14 +19,9 @@ mod period;
 mod text;
 mod zipio;
 
-pub use ajuste::{
-    ContratoResult, cucon, cuota_moderadora, numero_convenio, parse_decimal_literal, read_total,
-};
+pub use ajuste::{numero_convenio, parse_decimal_literal, read_total};
 pub use download::{normalize_download, validate};
-pub use invoice_total::{
-    InvoiceXmlFile, XmlState, existing_xml_pdf_zip, format_total, invoice_total,
-    locate_invoice_xml, storage_amount, xml_pdf_zip_paths,
-};
+pub use invoice_total::storage_amount;
 pub use lines::{InvoiceLine, invoice_lines};
 pub use ministerio::{Params, Prepared, prepare_ministerio};
 pub use zipio::{MAX_ENTRY_BYTES, build_xml_pdf_zip, first_xml_entry, read_entry, replace_entry};
@@ -42,9 +37,11 @@ pub const MODALIDAD_PAGO: &str = "Pago por evento";
 /// Contract value that [`prepare_ministerio`] and [`cucon`] replace.
 pub const CONTRATO_LEGACY: &str = "22382";
 
+#[cfg(any(test, feature = "test-support"))]
 /// Reason code reported when the XML has no `NUMERO_CONTRATO`.
 pub const REASON_XML_SIN_CONTRATO: &str = "XML_SIN_CONTRATO";
 
+#[cfg(any(test, feature = "test-support"))]
 /// Reason code reported when the invoice total cannot be read from the XML.
 pub const REASON_XML_SIN_VALOR: &str = "XML_SIN_VALOR";
 
@@ -94,6 +91,7 @@ pub enum FevxmlError {
 }
 
 impl FevxmlError {
+    #[cfg(any(test, feature = "test-support"))]
     /// Stable reason code for the errors that surface as one in the CLI.
     pub fn reason_code(&self) -> Option<&'static str> {
         match self {

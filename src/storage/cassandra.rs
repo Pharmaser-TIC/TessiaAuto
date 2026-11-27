@@ -125,6 +125,7 @@ impl CassandraStore {
         )
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// Replaces the retry policy (tests use an instant one).
     #[must_use]
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {

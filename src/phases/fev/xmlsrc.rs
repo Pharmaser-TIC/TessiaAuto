@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use anyhow::Result;
 use rust_decimal::Decimal;
 
-use crate::context::AppContext;
 use crate::fevxml;
 use crate::storage::Artifacts;
 use crate::stores::artefactos::Artefacto;
@@ -110,28 +109,5 @@ impl XmlRead {
             mtime_ms: stamp.0,
             size: stamp.1,
         })
-    }
-}
-
-/// Go `persistXMLValues`: stores the XML total of each invoice (file name
-/// without `_XML_PDF`) in `factura_valor_xml`. A side effect of the phase,
-/// never part of its outcome: a failure is only logged.
-pub fn persist_xml_values(ctx: &AppContext, cargue_id: &str, names: &[String]) {
-    if names.is_empty() {
-        return;
-    }
-    let sources = match XmlSources::load(&ctx.artifacts(), cargue_id) {
-        Ok(sources) => sources,
-        Err(err) => {
-            tracing::warn!(error = %err, "xml total not stored");
-            return;
-        }
-    };
-    let values: Vec<XmlValueUpsert> = names
-        .iter()
-        .filter_map(|name| sources.read(name).upsert(name))
-        .collect();
-    if let Err(err) = ctx.valor_xml().upsert_xml_values(&values) {
-        tracing::warn!(error = %err, "xml total not stored");
     }
 }

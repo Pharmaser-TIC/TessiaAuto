@@ -1,4 +1,4 @@
-//! `radicacion run` and `radicacion recheck-step2`: the Mutual Ser 4-step filing pipeline.
+//! `radicacion run`: the Mutual Ser 4-step filing pipeline.
 //!
 //! Port of Go `cmd_radicacion.go` + `internal/radicacion` (+ the Mutual Ser
 //! adapter). Layout of this module:
@@ -9,7 +9,7 @@
 //! * [`files`] / [`archive`]: the cargue's artifacts as the step files, and
 //!   the "filed" marker that replaces moving files into `Radicado/`;
 //! * [`values`]: the step 1 value check inputs;
-//! * [`recheck`], [`timings`]: `recheck-step2` and the "Tiempos de radicación" report.
+//! * [`timings`]: the "Tiempos de radicación" report.
 //!
 //! One machine files a cargue at a time: [`run_cargue`] holds the lease
 //! `radicacion:<cargue>` (renewed while running). `proceso run` should call
@@ -17,7 +17,6 @@
 
 pub mod api;
 pub mod archive;
-pub mod cli;
 pub mod client;
 pub mod confirm;
 pub mod engine;
@@ -25,7 +24,6 @@ pub mod files;
 pub mod model;
 pub mod portal;
 pub mod progress;
-pub mod recheck;
 pub mod rules;
 pub mod timings;
 pub mod values;
@@ -47,8 +45,6 @@ use engine::{Config, Deps, Engine, Report};
 use files::{ArtifactFiles, Files};
 use timings::{Snapshot, Timings};
 use values::Values;
-
-pub use cli::Args;
 
 /// Artifact that keeps the last run's timings (Go `radicacion_tiempos.json`).
 pub const TIMINGS_ARTIFACT: &str = "radicacion_tiempos.json";
@@ -72,73 +68,6 @@ pub struct RunOptions {
 pub struct RunOutcome {
     pub report: Report,
     pub timings: Snapshot,
-}
-
-/// Entry point of the command line.
-pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
-    match args.command {
-        cli::Command::Run(args) => run_command(ctx, &args),
-        cli::Command::RecheckStep2(args) => recheck_command(ctx, &args),
-    }
-}
-
-fn run_command(ctx: &AppContext, args: &cli::RunArgs) -> Result<()> {
-    let cargue_id = args.cargue_id()?;
-    let invoices = normalized(&args.invoices);
-    let opts = RunOptions {
-        engine: engine_config(args),
-        portal_follow: args.portal_follow,
-        portal_schedule: Vec::new(),
-    };
-    let requested = (!invoices.is_empty()).then_some(invoices.as_slice());
-    let Some(outcome) = run_cargue(ctx, cargue_id, requested, &opts)? else {
-        println!("no se encontraron facturas en el cargue {cargue_id}");
-        return Ok(());
-    };
-    print_report(&outcome.report);
-    println!("\n{}", outcome.timings.text());
-    println!("Detalle de tiempos: {TIMINGS_ARTIFACT} (artefacto del cargue {cargue_id})");
-    if crate::shutdown::requested() {
-        bail!("interrumpido");
-    }
-    Ok(())
-}
-
-fn engine_config(args: &cli::RunArgs) -> Config {
-    let positive =
-        |d: Option<cli::SignedDuration>| d.map(cli::SignedDuration::positive).unwrap_or_default();
-    Config {
-        batch_max: args.batch_max.unwrap_or(0),
-        prepare_concurrency: args.prepare_concurrency.unwrap_or(0),
-        precheck_timeout: args
-            .precheck_timeout
-            .map(cli::SignedDuration::wait)
-            .unwrap_or_default(),
-        deadline: positive(args.deadline),
-        retry_interval: positive(args.retry_interval),
-        reload_wait: args
-            .reload_wait
-            .map(cli::SignedDuration::wait)
-            .unwrap_or_default(),
-        max_sends: args.max_sends.unwrap_or(0),
-        only_step: args.step.and_then(|n| Step::from_i16(i16::from(n))),
-        ..Config::default()
-    }
-}
-
-fn recheck_command(ctx: &AppContext, args: &cli::RecheckStep2Args) -> Result<()> {
-    let invoices = normalized(&args.invoices);
-    if invoices.is_empty() {
-        bail!("uso: facturacion radicacion recheck-step2 --invoices a,b");
-    }
-    let nit = nit(ctx)?;
-    let api = build_client(ctx, &nit, None)?;
-    let report = recheck::recheck_step2(&api, &ctx.radicacion(), &invoices)?;
-    println!("{}", report.line());
-    if report.interrupted {
-        bail!("interrumpido");
-    }
-    Ok(())
 }
 
 /// Runs the phase for the invoices of `req` (called by `proceso run`) with the
@@ -413,47 +342,6 @@ fn publish_timings(ctx: &AppContext, cargue_id: &str, snapshot: &Snapshot) {
         });
     if let Err(err) = result {
         tracing::warn!(error = %err, "could not store the radicación timings");
-    }
-}
-
-/// Prints the report of a run (same lines as Go).
-fn print_report(report: &Report) {
-    println!("{}", report.summary());
-    let groups: [(&str, &Vec<String>); 4] = [
-        ("rejected (notes required)", &report.rejected),
-        ("blocked", &report.blocked),
-        ("in progress", &report.in_progress),
-        ("unclassified", &report.unclassified),
-    ];
-    for (label, list) in groups {
-        if list.is_empty() {
-            continue;
-        }
-        let shown = &list[..list.len().min(40)];
-        println!("{label} ({}): {}", list.len(), shown.join(", "));
-        for invoice in shown {
-            if let Some(st) = report
-                .states
-                .get(invoice)
-                .filter(|s| !s.last_detail.is_empty())
-            {
-                println!(
-                    "  {invoice} paso={} {}: {}",
-                    st.step.as_i16(),
-                    st.status,
-                    truncate_detail(&st.last_detail)
-                );
-            }
-        }
-    }
-}
-
-fn truncate_detail(text: &str) -> String {
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.chars().count() > 300 {
-        format!("{}...", line.chars().take(300).collect::<String>())
-    } else {
-        line
     }
 }
 

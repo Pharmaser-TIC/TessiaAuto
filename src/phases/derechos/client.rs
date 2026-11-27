@@ -172,6 +172,7 @@ impl ValidatorClient {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// The adaptive limiter shared by every call of this client.
     pub fn limiter(&self) -> &AdaptiveLimiter {
         &self.limiter

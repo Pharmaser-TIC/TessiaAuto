@@ -31,6 +31,7 @@ const CURRENT_LOAD: &str = "g.seq = COALESCE(
     AND g.id <> '' AND g.id <> '..'
     AND position('/' in g.id) = 0 AND position(chr(92) in g.id) = 0";
 
+#[cfg(any(test, feature = "test-support"))]
 /// Phases that generate the four artifacts, in table order (ZIP XML/PDF, RIPS
 /// JSON, TXT CUV, ZIP CRC).
 pub const ARTIFACT_PHASES: [&str; 4] = ["thefactory", "rips", "cuv", "soporte"];

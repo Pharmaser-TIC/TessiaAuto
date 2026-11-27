@@ -60,6 +60,7 @@ impl Catalog {
         self.items.len()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

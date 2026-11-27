@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use crate::domain::cargue::LoadOrigin;
 use crate::domain::dataset::Line;
 use crate::domain::normalize_invoice;
+#[cfg(any(test, feature = "test-support"))]
 use crate::stores::parametros::default_automatic_subplans;
 use crate::util::text::normalize_key;
 
@@ -19,6 +20,7 @@ pub struct AutomaticSubplans {
 }
 
 impl AutomaticSubplans {
+    #[cfg(any(test, feature = "test-support"))]
     /// The hard-coded defaults (`EVENTO POS`, `EVENTO NO PBS`,
     /// `TRANSFERENCIA DE PENDIENTES CON AUTORIZACION`,
     /// `EVENTO SAS SIN AUTORIZACION`).
