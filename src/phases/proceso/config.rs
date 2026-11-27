@@ -34,6 +34,19 @@ pub struct Tuning {
     /// same cargue.
     pub prepare_wait: Duration,
     pub prepare_poll: Duration,
+    /// Waits before each retry of an invoice stopped by a provider outage
+    /// (empty: no retry; see `PipelineConfig::retry_schedule`).
+    pub retry_schedule: Vec<Duration>,
+}
+
+/// Minutes, growing: 30 s, 2 min, 5 min, 10 min, 15 min (about half an hour
+/// in all). A longer outage ends the invoice as FAILED, to be picked up by a
+/// later run.
+pub fn default_retry_schedule() -> Vec<Duration> {
+    [30, 120, 300, 600, 900]
+        .into_iter()
+        .map(Duration::from_secs)
+        .collect()
 }
 
 impl Default for Tuning {
@@ -45,6 +58,7 @@ impl Default for Tuning {
             radicacion_wait: Duration::from_secs(30 * 60),
             prepare_wait: Duration::from_secs(30 * 60),
             prepare_poll: Duration::from_secs(2),
+            retry_schedule: default_retry_schedule(),
         }
     }
 }

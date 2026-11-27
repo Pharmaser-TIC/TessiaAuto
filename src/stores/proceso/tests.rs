@@ -364,3 +364,117 @@ fn start_all_races_have_a_single_winner_per_invoice() {
         .collect();
     assert_eq!(owners.len(), 1);
 }
+
+#[test]
+fn a_retry_is_stored_as_a_failed_row_with_its_time_and_cleared_by_the_next_claim_or_result() {
+    let db = TestDb::new();
+    let store = ProcesoStore::new(db.pool());
+    let at = Utc::now() + chrono::Duration::minutes(5);
+
+    // No row yet: it is created.
+    assert!(
+        store
+            .schedule_retry(
+                Phase::Cuv,
+                "FEV000",
+                Some("C1"),
+                "TERCERO_NO_DISPONIBLE: sispro",
+                at
+            )
+            .expect("schedule")
+    );
+    let row = store.load(Phase::Cuv, None).expect("load")["FEV000"].clone();
+    assert_eq!(
+        (row.state, row.motivo.as_str()),
+        (PhaseState::Failed, "TERCERO_NO_DISPONIBLE: sispro")
+    );
+    assert_eq!(
+        row.next_attempt_at.map(|t| t.timestamp()),
+        Some(at.timestamp())
+    );
+
+    // The next claim means the work is being done: the wait is gone.
+    let claim = opts("a", Duration::from_secs(60));
+    let inv = vec!["FEV000".to_owned()];
+    let got = store
+        .claim_available(Phase::Cuv, &items(&store, Phase::Cuv, &inv), &claim)
+        .expect("claim");
+    let version = got["FEV000"];
+    let row = store.load(Phase::Cuv, None).expect("load")["FEV000"].clone();
+    assert_eq!(
+        (row.state, row.next_attempt_at),
+        (PhaseState::EnProgreso, None)
+    );
+
+    // A row in progress is never overwritten by a wait marker.
+    assert!(
+        !store
+            .schedule_retry(Phase::Cuv, "FEV000", Some("C1"), "x", at)
+            .expect("schedule")
+    );
+    assert_eq!(
+        store.load(Phase::Cuv, None).expect("load")["FEV000"].state,
+        PhaseState::EnProgreso
+    );
+
+    // A result clears any wait (a retry that ended in a failure keeps none).
+    assert!(
+        store
+            .save_outcome(Phase::Cuv, "FEV000", &Outcome::done(), version)
+            .expect("outcome")
+    );
+    let row = store.load(Phase::Cuv, None).expect("load")["FEV000"].clone();
+    assert_eq!((row.state, row.next_attempt_at), (PhaseState::Done, None));
+
+    // A finished row can be put to wait again (a later retry of the same invoice).
+    assert!(
+        store
+            .schedule_retry(Phase::Cuv, "FEV000", Some("C1"), "again", at)
+            .expect("schedule")
+    );
+    let row = store.load(Phase::Cuv, None).expect("load")["FEV000"].clone();
+    assert_eq!(
+        (row.state, row.next_attempt_at.is_some()),
+        (PhaseState::Failed, true)
+    );
+}
+
+#[test]
+fn waiting_invoices_are_listed_by_phase_with_their_next_retry() {
+    let db = TestDb::new();
+    let store = ProcesoStore::new(db.pool());
+    let soon = Utc::now() + chrono::Duration::minutes(1);
+    let later = soon + chrono::Duration::minutes(9);
+    store
+        .schedule_retry(Phase::Cuv, "FEV001", Some("C1"), "a", later)
+        .expect("s");
+    store
+        .schedule_retry(Phase::Cuv, "FEV002", Some("C1"), "b", soon)
+        .expect("s");
+    store
+        .schedule_retry(Phase::TheFactory, "FEV003", Some("C2"), "c", later)
+        .expect("s");
+    // Not waiting: an ordinary failure, and a wait already in the past.
+    store
+        .save(&save_row("FEV004", Phase::Cuv, Outcome::failed("x"), 1))
+        .expect("save");
+    store
+        .schedule_retry(
+            Phase::Cuv,
+            "FEV005",
+            Some("C1"),
+            "old",
+            Utc::now() - chrono::Duration::minutes(1),
+        )
+        .expect("s");
+
+    let waiting = store.waiting().expect("waiting");
+    let by_phase: Vec<_> = waiting.iter().map(|w| (w.phase, w.invoices)).collect();
+    assert_eq!(by_phase, [(Phase::TheFactory, 1), (Phase::Cuv, 2)]);
+    let cuv = waiting.iter().find(|w| w.phase == Phase::Cuv).expect("cuv");
+    assert_eq!(
+        cuv.next_attempt_at.timestamp(),
+        soon.timestamp(),
+        "the earliest one"
+    );
+}

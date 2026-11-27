@@ -99,6 +99,9 @@ pub fn config(source: &str) -> RunConfig {
     cfg.tuning.radicacion_wait = Duration::from_millis(400);
     cfg.tuning.prepare_poll = Duration::from_millis(20);
     cfg.tuning.prepare_wait = Duration::from_secs(10);
+    // The production schedule waits minutes between attempts: tests that need
+    // retries set their own.
+    cfg.tuning.retry_schedule = Vec::new();
     for pool in [
         "thefactory",
         "fev",

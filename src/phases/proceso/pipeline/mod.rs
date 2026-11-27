@@ -16,7 +16,8 @@
 //! The engine knows nothing about databases or phases: the caller passes
 //! closures ([`Hooks`]), which is what makes it testable with fakes.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -75,6 +76,11 @@ pub struct PipelineConfig {
     /// How many replacements can ever be injected.
     pub replace_cap: usize,
     pub breaker: usize,
+    /// Waits before each retry of an invoice that stopped in a phase because a
+    /// provider is down (see `Verdict::outage`). The attempt `n` waits
+    /// `retry_schedule[n]`, or longer when the verdict asks for it; once the
+    /// schedule is spent the invoice fails as it always did. Empty = no retry.
+    pub retry_schedule: Vec<Duration>,
 }
 
 /// Runs one phase for one invoice.
@@ -84,10 +90,15 @@ pub type FireFn<'a> = &'a (dyn Fn(&[String]) -> Fired + Sync);
 /// Returns up to `n` new, prepared invoices; fewer means the pool is spent.
 pub type SupplyFn<'a> = &'a (dyn Fn(usize) -> Result<Vec<String>> + Sync);
 
+/// Told when an invoice is put to wait for a retry: `(phase, invoice, reason,
+/// delay)`. The caller can record it (`proceso_estado.next_attempt_at`).
+pub type WaitFn<'a> = &'a (dyn Fn(&str, &str, &str, Duration) + Sync);
+
 pub struct Hooks<'a> {
     pub run: RunFn<'a>,
     pub fire: Option<FireFn<'a>>,
     pub supply: Option<SupplyFn<'a>>,
+    pub waiting: Option<WaitFn<'a>>,
 }
 
 /// Final tallies of a run.
@@ -164,6 +175,24 @@ struct State {
     /// Drops without a replacement yet, so each injected invoice names the
     /// drop it covers.
     pending_drops: VecDeque<(String, String)>,
+    /// Retries already used per `(invoice, phase)`.
+    retries: HashMap<(String, &'static str), usize>,
+}
+
+/// An invoice waiting to be sent back to a phase: `(due, order, phase, invoice)`.
+type Due = (Instant, u64, &'static str, String);
+
+#[derive(Default)]
+struct DelayedState {
+    heap: BinaryHeap<Reverse<Due>>,
+    seq: u64,
+    closed: bool,
+}
+
+/// Invoices put to wait after an outage, and the condvar their timer sleeps on.
+struct Delayed {
+    state: Mutex<DelayedState>,
+    changed: Condvar,
 }
 
 #[derive(Default)]
@@ -202,6 +231,7 @@ struct Run<'a> {
     senders: Mutex<HashMap<&'static str, Sender<String>>>,
     state: Mutex<State>,
     gate: Gate,
+    delayed: Delayed,
     fire_lock: Mutex<()>,
     /// Serializes "compute need + supply + inject"; true once replacement is over.
     supply_stopped: Mutex<bool>,
@@ -230,9 +260,14 @@ pub fn run_pipeline(cfg: &PipelineConfig, hooks: &Hooks<'_>, events: &Events) ->
             injected: 0,
             drop_streak: 0,
             pending_drops: VecDeque::new(),
+            retries: HashMap::new(),
         }),
         gate: Gate {
             state: Mutex::new(GateState::default()),
+            changed: Condvar::new(),
+        },
+        delayed: Delayed {
+            state: Mutex::new(DelayedState::default()),
             changed: Condvar::new(),
         },
         fire_lock: Mutex::new(()),
@@ -256,6 +291,7 @@ impl Run<'_> {
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
         self.gate.changed.notify_all();
+        self.delayed.changed.notify_all();
     }
 
     fn execute(&self) -> Finished {
@@ -284,6 +320,9 @@ impl Run<'_> {
             if timed {
                 scope.spawn(|| self.timer());
             }
+            if !self.cfg.retry_schedule.is_empty() {
+                scope.spawn(|| self.retry_timer());
+            }
             self.inflight.add(self.cfg.invoices.len());
             for invoice in &self.cfg.invoices {
                 self.enter(invoice.clone());
@@ -292,6 +331,8 @@ impl Run<'_> {
             lock(&self.senders).clear();
             lock(&self.gate.state).closed = true;
             self.gate.changed.notify_all();
+            lock(&self.delayed.state).closed = true;
+            self.delayed.changed.notify_all();
         });
         // The timer is gone: flush the last, partial batch.
         let last = {
@@ -402,17 +443,129 @@ impl Run<'_> {
             .phase_ms
             .entry(spec.name.to_owned())
             .or_default() += ms;
-        self.events.emit(
-            Event::new("invoice_step")
-                .invoice(invoice)
-                .phase(spec.name, spec.label)
+        // A provider that is down: the invoice waits and comes back to this
+        // phase instead of dropping out of the run.
+        let retry = self.plan_retry(spec, invoice, &verdict);
+        let mut step = Event::new("invoice_step")
+            .invoice(invoice)
+            .phase(spec.name, spec.label)
+            .millis(ms);
+        step = match &retry {
+            // Not an error yet: the step is "skipped" for the counters.
+            Some((_, why)) => step.status(Status::Skipped.as_str()).reason(why),
+            None => step
                 .status(verdict.status.as_str())
-                .millis(ms)
                 .reason(&verdict.reason)
                 .error(verdict.error.as_deref().unwrap_or_default()),
-        );
-        self.route(spec, invoice, &verdict);
+        };
+        self.events.emit(step);
+        match retry {
+            Some((delay, why)) => self.wait_for_retry(spec, invoice, delay, &why),
+            None => self.route(spec, invoice, &verdict),
+        }
         verdict.conflict
+    }
+
+    /// Whether this verdict puts the invoice to wait, and for how long: a
+    /// provider outage, a retry left in the schedule and a run still going.
+    fn plan_retry(
+        &self,
+        spec: &PhaseSpec,
+        invoice: &str,
+        verdict: &Verdict,
+    ) -> Option<(Duration, String)> {
+        let outage = verdict.outage.as_ref()?;
+        if verdict.status != Status::Failed || self.cancelled() {
+            return None;
+        }
+        let schedule = &self.cfg.retry_schedule;
+        let mut state = lock(&self.state);
+        let used = state
+            .retries
+            .entry((invoice.to_owned(), spec.name))
+            .or_default();
+        let wait = *schedule.get(*used)?;
+        *used += 1;
+        let delay = wait.max(outage.wait.unwrap_or_default());
+        let why = format!(
+            "{} no responde: nuevo intento en {} s (reintento {}/{})",
+            outage.provider,
+            delay.as_secs().max(1),
+            *used,
+            schedule.len()
+        );
+        Some((delay, why))
+    }
+
+    /// Puts the invoice in the delayed queue; it keeps counting as in flight,
+    /// so the run does not end while it waits.
+    fn wait_for_retry(&self, spec: &PhaseSpec, invoice: &str, delay: Duration, why: &str) {
+        self.events.emit(
+            Event::new("invoice_retry")
+                .invoice(invoice)
+                .phase(spec.name, spec.label)
+                .millis(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX))
+                .reason(why),
+        );
+        tracing::warn!(
+            invoice,
+            phase = spec.name,
+            delay_ms = delay.as_millis() as u64,
+            "{why}"
+        );
+        if let Some(waiting) = self.hooks.waiting {
+            waiting(spec.name, invoice, why, delay);
+        }
+        let mut state = lock(&self.delayed.state);
+        state.seq += 1;
+        let order = state.seq;
+        state.heap.push(Reverse((
+            Instant::now() + delay,
+            order,
+            spec.name,
+            invoice.to_owned(),
+        )));
+        self.delayed.changed.notify_all();
+    }
+
+    /// Sends the waiting invoices back to their phase when they are due; a
+    /// cancelled run lets them all go at once (`send` then drops them).
+    fn retry_timer(&self) {
+        // Also wakes up to notice an interrupt, which does not notify.
+        const SLICE: Duration = Duration::from_millis(250);
+        let mut state = lock(&self.delayed.state);
+        loop {
+            let due = match state.heap.peek() {
+                Some(Reverse((at, ..))) => {
+                    let now = Instant::now();
+                    if self.cancelled() || *at <= now {
+                        None
+                    } else {
+                        Some((*at - now).min(SLICE))
+                    }
+                }
+                None if state.closed => return,
+                None => Some(SLICE),
+            };
+            match due {
+                Some(wait) => {
+                    state = self
+                        .delayed
+                        .changed
+                        .wait_timeout(state, wait)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+                None => {
+                    let Some(Reverse((_, _, phase, invoice))) = state.heap.pop() else {
+                        continue;
+                    };
+                    drop(state);
+                    self.send(phase, invoice);
+                    state = lock(&self.delayed.state);
+                }
+            }
+        }
     }
 
     fn route(&self, spec: &PhaseSpec, invoice: &str, verdict: &Verdict) {

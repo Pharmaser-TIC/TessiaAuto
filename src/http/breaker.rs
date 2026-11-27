@@ -167,6 +167,16 @@ impl CircuitBreaker {
         }
     }
 
+    /// A call was admitted but says nothing about the provider (the invoice was
+    /// left to another machine, or the failure was somewhere else). If it was
+    /// the half-open probe, the next caller probes instead.
+    pub fn skip(&self) {
+        let mut inner = self.lock();
+        if let State::HalfOpen { probing } = &mut inner.state {
+            *probing = false;
+        }
+    }
+
     /// Records how a call ended. `error` describes a failure (kept for display).
     pub fn record(&self, ok: bool, error: Option<&str>) {
         let now = (self.clock)();
@@ -381,6 +391,20 @@ mod tests {
             b.record(false, Some("still down"));
             assert_eq!(b.allow().expect_err("reopened"), Duration::from_secs(*want));
         }
+    }
+
+    #[test]
+    fn a_probe_that_says_nothing_lets_the_next_caller_probe() {
+        let (b, offset) = breaker(small());
+        fail(&b, 4);
+        advance(&offset, Duration::from_secs(31));
+        assert!(b.allow().is_ok(), "the probe");
+        b.skip();
+        assert!(b.allow().is_ok(), "nobody judged it: another caller probes");
+        // Outside half-open it does nothing.
+        b.record(true, None);
+        b.skip();
+        assert_eq!(b.snapshot().state, BreakerState::Closed);
     }
 
     #[test]

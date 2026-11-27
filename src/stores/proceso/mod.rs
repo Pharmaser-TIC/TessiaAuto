@@ -145,6 +145,15 @@ impl ClaimItem {
     }
 }
 
+/// Invoices waiting for a retry in one phase (see [`ProcesoStore::waiting`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    pub phase: Phase,
+    pub invoices: usize,
+    /// The earliest retry of the phase.
+    pub next_attempt_at: DateTime<Utc>,
+}
+
 /// Who claims, for which cargue, and when another worker's claim is dead.
 #[derive(Debug, Clone)]
 pub struct ClaimOptions {
@@ -336,11 +345,97 @@ impl ProcesoStore {
                 t::version.eq(t::version + 1),
                 t::claimed_by.eq(None::<String>),
                 t::claimed_at.eq(None::<DateTime<Utc>>),
+                t::next_attempt_at.eq(None::<DateTime<Utc>>),
                 t::updated_at.eq(diesel::dsl::now),
             ))
             .execute(conn)?;
             Ok(rows > 0)
         })
+    }
+
+    /// Records that an invoice stopped in `phase` because a provider is down
+    /// and will be tried again at `at`: the row becomes `FAILED` with `motivo`
+    /// and `next_attempt_at = at`, so the wait can be seen. A row that is being
+    /// worked on (`EN_PROGRESO`) is left alone. The next claim or result clears
+    /// the wait. True when written.
+    pub fn schedule_retry(
+        &self,
+        phase: Phase,
+        invoice: &str,
+        cargue_id: Option<&str>,
+        motivo: &str,
+        at: DateTime<Utc>,
+    ) -> DbResult<bool> {
+        let failed = PhaseState::Failed.as_str();
+        self.pool.run("schedule retry", |conn| {
+            // An existing row that nobody is working on is put to wait ...
+            let updated = diesel::update(
+                t::table.filter(
+                    t::num_factura
+                        .eq(invoice)
+                        .and(t::fase.eq(phase.as_str()))
+                        .and(t::estado.ne(PhaseState::EnProgreso.as_str())),
+                ),
+            )
+            .set((
+                t::estado.eq(failed),
+                t::motivo.eq(motivo),
+                t::version.eq(t::version + 1),
+                t::next_attempt_at.eq(Some(at)),
+                t::claimed_by.eq(None::<String>),
+                t::claimed_at.eq(None::<DateTime<Utc>>),
+                t::updated_at.eq(diesel::dsl::now),
+            ))
+            .execute(conn)?;
+            if updated > 0 {
+                return Ok(true);
+            }
+            // ... a missing one is created; one in progress is left alone
+            // (the insert finds it and does nothing).
+            let inserted = diesel::insert_into(t::table)
+                .values((
+                    t::num_factura.eq(invoice),
+                    t::fase.eq(phase.as_str()),
+                    t::cargue_id.eq(cargue_id),
+                    t::estado.eq(failed),
+                    t::motivo.eq(motivo),
+                    t::version.eq(0_i64),
+                    t::next_attempt_at.eq(Some(at)),
+                ))
+                .on_conflict_do_nothing()
+                .execute(conn)?;
+            Ok(inserted > 0)
+        })
+    }
+
+    /// The invoices waiting for a retry, by phase (in pipeline order): how
+    /// many, and the earliest time one of them is due. Waits that already
+    /// passed are not listed.
+    pub fn waiting(&self) -> DbResult<Vec<Waiting>> {
+        let rows: Vec<(String, Option<DateTime<Utc>>)> =
+            self.pool.run("waiting retries", |conn| {
+                Ok(t::table
+                    .filter(t::estado.eq(PhaseState::Failed.as_str()))
+                    .filter(sql::<Bool>("next_attempt_at > now()"))
+                    .select((t::fase, t::next_attempt_at))
+                    .load(conn)?)
+            })?;
+        let mut by_phase: HashMap<Phase, Waiting> = HashMap::new();
+        for (name, at) in rows {
+            let (Ok(phase), Some(at)) = (name.parse::<Phase>(), at) else {
+                continue;
+            };
+            let entry = by_phase.entry(phase).or_insert(Waiting {
+                phase,
+                invoices: 0,
+                next_attempt_at: at,
+            });
+            entry.invoices += 1;
+            entry.next_attempt_at = entry.next_attempt_at.min(at);
+        }
+        let mut out: Vec<Waiting> = by_phase.into_values().collect();
+        out.sort_by_key(|w| w.phase);
+        Ok(out)
     }
 
     /// Gives claims back (Go `CancelStarted`): each invoice in `versions` that
@@ -530,6 +625,8 @@ fn claim_one(
             },
             t::claimed_at.eq(diesel::dsl::now),
             t::updated_at.eq(diesel::dsl::now),
+            // Working on it now: any wait for a retry is over.
+            t::next_attempt_at.eq(None::<DateTime<Utc>>),
         )
     };
     let claimed = match item.expected {

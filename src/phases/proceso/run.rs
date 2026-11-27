@@ -4,9 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
+
 use anyhow::{Result, anyhow};
 
-use super::classify::{Verdict, classify};
+use super::classify::{Outage, STORAGE_PROVIDER, Status, Verdict, classify, provider_of};
 use super::config::RunConfig;
 use super::events::Event;
 use super::events::Events;
@@ -18,7 +20,8 @@ use super::seed::{Seeded, seed};
 use super::steps::label;
 use crate::context::AppContext;
 use crate::domain::{Phase, PhaseState};
-use crate::phases::common::{PhaseReport, PhaseRequest};
+use crate::http::CircuitBreaker;
+use crate::phases::common::{PhaseReport, PhaseRequest, outage_reason};
 use crate::phases::radicacion::progress::{self, StepProgress};
 
 /// What a run did.
@@ -80,10 +83,28 @@ fn stream(
         Some(supplier) => supplier.supply(ctx, events, n),
         None => Ok(Vec::new()),
     };
+    // An invoice put to wait for a retry is recorded (`next_attempt_at`), so
+    // the wait can be seen; failing to record it never matters to the run.
+    let waiting = |phase: &str, invoice: &str, reason: &str, delay: Duration| {
+        let Some(stored) = phase_of(phase) else {
+            return;
+        };
+        let at = Utc::now() + chrono::Duration::from_std(delay).unwrap_or_default();
+        if let Err(err) = ctx.proceso().schedule_retry(
+            stored,
+            invoice,
+            Some(&seeded.cargue_id),
+            &outage_reason(reason),
+            at,
+        ) {
+            tracing::warn!(invoice, phase, error = %err, "retry wait not recorded");
+        }
+    };
     let hooks = Hooks {
         run: &run,
         fire: pipeline.gate.is_some().then_some(&fire as _),
         supply: seeded.supplier.is_some().then_some(&supply as _),
+        waiting: Some(&waiting),
     };
     run_pipeline(&pipeline, &hooks, events)
 }
@@ -125,6 +146,7 @@ fn pipeline_config(cfg: &RunConfig, seeded: &Seeded) -> PipelineConfig {
         target: if replacing.is_some() { cfg.limit } else { 0 },
         replace_cap: replacing.map_or(0, |s| s.pool_size()),
         breaker: cfg.tuning.breaker,
+        retry_schedule: cfg.tuning.retry_schedule.clone(),
     }
 }
 
@@ -158,6 +180,20 @@ fn run_one(
         invoices: Some(vec![invoice.to_owned()]),
         workers: None,
     };
+    // Providers this phase depends on: storage always, plus its own. When one
+    // keeps failing its breaker is open and the phase does not even start: the
+    // invoice waits instead of every worker running into the same outage.
+    let mut admitted: Vec<Arc<CircuitBreaker>> = Vec::new();
+    for provider in providers_of(phase) {
+        let breaker = ctx.breakers.get(provider);
+        if let Err(wait) = breaker.allow() {
+            for taken in &admitted {
+                taken.skip();
+            }
+            return open_verdict(provider, wait);
+        }
+        admitted.push(breaker);
+    }
     let stored = || {
         let stored = ctx
             .proceso()
@@ -165,7 +201,50 @@ fn run_one(
             .ok()?;
         stored.get(invoice).map(|s| s.state)
     };
-    classify(phase, invoice, run(ctx, &request), &|| stored())
+    let verdict = classify(phase, invoice, run(ctx, &request), &|| stored());
+    settle(&admitted, &verdict);
+    verdict
+}
+
+/// The providers a phase depends on, storage first.
+fn providers_of(phase: &str) -> Vec<&'static str> {
+    std::iter::once(STORAGE_PROVIDER)
+        .chain(provider_of(phase))
+        .collect()
+}
+
+/// What an open breaker looks like to the pipeline: an outage with the time to
+/// wait, without having asked the provider anything.
+fn open_verdict(provider: &'static str, wait: Duration) -> Verdict {
+    let message = format!(
+        "{provider} no responde: se pausó la fase hasta poder volver a probar ({} s)",
+        wait.as_secs().max(1)
+    );
+    Verdict {
+        error: Some(message.clone()),
+        resumable: true,
+        outage: Some(Outage {
+            provider,
+            wait: Some(wait),
+        }),
+        ..Verdict::new(Status::Failed, &message)
+    }
+}
+
+/// Tells each admitted breaker how the invoice ended: a provider that failed
+/// is a failure; an answer from the others (even "no" for this invoice) is a
+/// success; an invoice left to another machine says nothing.
+fn settle(admitted: &[Arc<CircuitBreaker>], verdict: &Verdict) {
+    for breaker in admitted {
+        match &verdict.outage {
+            Some(outage) if outage.provider == breaker.name() => {
+                breaker.record(false, verdict.error.as_deref());
+            }
+            Some(_) => breaker.skip(),
+            None if verdict.status == Status::Skipped => breaker.skip(),
+            None => breaker.record(true, None),
+        }
+    }
 }
 
 /// Files one batch through `radicacion`. While another machine files the same

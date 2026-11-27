@@ -6,6 +6,8 @@
 mod support;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use anyhow::anyhow;
 use support::*;
@@ -725,4 +727,142 @@ fn replacement_needs_a_csv_prepared_in_this_call() {
     let (summary, out) = run_with(&env, &again, &runner);
     assert_eq!(summary.expect("run").finished.replaced, 0);
     assert!(out.of("invoice_replace").is_empty());
+}
+
+fn derechos_down() -> anyhow::Error {
+    anyhow::Error::new(DerechosError::ValidatorUnreachable {
+        untouched: 1,
+        detail: "rino.mutualser.com no responde".into(),
+    })
+}
+
+fn quick_retries(cfg: &mut tessia::phases::proceso::RunConfig, waits_ms: &[u64]) {
+    cfg.tuning.retry_schedule = waits_ms
+        .iter()
+        .map(|ms| Duration::from_millis(*ms))
+        .collect();
+}
+
+#[test]
+fn an_outage_in_a_phase_waits_retries_and_the_invoice_still_files() {
+    let env = setup();
+    let mut cfg = csv_cfg(&env, &pos_rows(2));
+    quick_retries(&mut cfg, &[30, 30]);
+    let (log, rad) = (Log::default(), batches());
+    let base = fake_runner(&log, &rad);
+    let normal = base.get("derechos").expect("derechos").clone();
+    let tries = Arc::new(AtomicUsize::new(0));
+    let counter = tries.clone();
+    // The validator is down for EVS1 twice, then it answers.
+    let runner = base.with("derechos", move |ctx, req| {
+        let evs1 = req.invoices.as_deref() == Some(&["EVS1".to_owned()][..]);
+        if evs1 && counter.fetch_add(1, Ordering::SeqCst) < 2 {
+            return Err(derechos_down());
+        }
+        normal(ctx, req)
+    });
+    let (summary, out) = run_with(&env, &cfg, &runner);
+
+    let summary = summary.expect("an outage that clears is not an error");
+    assert_eq!((summary.finished.done, summary.finished.failed), (2, 0));
+    assert_eq!(tries.load(Ordering::SeqCst), 3);
+    assert_eq!(out.of("invoice_retry").len(), 2);
+    assert_eq!(flatten(&rad), ["EVS1", "EVS2"], "both were filed");
+    assert!(
+        env.ctx.proceso().waiting().expect("waiting").is_empty(),
+        "nothing is left waiting once it cleared"
+    );
+    let derechos = env
+        .ctx
+        .proceso()
+        .load(Phase::Derechos, None)
+        .expect("states");
+    assert_eq!(derechos["EVS1"].state, PhaseState::Done);
+    assert_eq!(derechos["EVS1"].next_attempt_at, None);
+}
+
+#[test]
+fn a_wait_is_visible_while_it_lasts_and_the_schedule_ending_is_reported() {
+    let env = setup();
+    let mut cfg = csv_cfg(&env, &pos_rows(1));
+    quick_retries(&mut cfg, &[400]);
+    let (log, rad) = (Log::default(), batches());
+    let seen_waiting = Arc::new(AtomicUsize::new(0));
+    let (ctx, seen) = (env.ctx.clone(), seen_waiting.clone());
+    let runner = fake_runner(&log, &rad).with("derechos", move |_, _| {
+        // On the second attempt the first one left its wait in the table.
+        let row = ctx
+            .proceso()
+            .load(Phase::Derechos, None)
+            .expect("states")
+            .get("EVS1")
+            .cloned();
+        if row.is_some_and(|r| r.state == PhaseState::Failed && r.next_attempt_at.is_some()) {
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+        Err(derechos_down())
+    });
+    let (summary, out) = run_with(&env, &cfg, &runner);
+
+    let err = summary
+        .expect_err("the validator never came back")
+        .to_string();
+    assert!(err.contains("rino.mutualser.com no responde"), "{err}");
+    assert_eq!(out.of("invoice_retry").len(), 1);
+    assert_eq!(
+        seen_waiting.load(Ordering::SeqCst),
+        1,
+        "the second attempt found the wait recorded by the first"
+    );
+    // The invoice is left for a later run: FAILED, marked as an outage.
+    let row = &env
+        .ctx
+        .proceso()
+        .load(Phase::Derechos, None)
+        .expect("states")["EVS1"];
+    assert_eq!(row.state, PhaseState::Failed);
+    assert!(
+        row.motivo
+            .starts_with("TERCERO_NO_DISPONIBLE: derechos no responde"),
+        "{}",
+        row.motivo
+    );
+}
+
+#[test]
+fn an_open_breaker_stops_asking_the_provider_that_keeps_failing() {
+    let mut env = setup();
+    env.ctx.breakers = Arc::new(tessia::http::Breakers::with_config(
+        tessia::http::BreakerConfig {
+            window: 10,
+            min_calls: 4,
+            failure_ratio: 0.5,
+            open_for: Duration::from_millis(300),
+            max_open: Duration::from_millis(300),
+        },
+    ));
+    let mut cfg = csv_cfg(&env, &pos_rows(12));
+    quick_retries(&mut cfg, &[20]);
+    cfg.workers.insert("derechos", 2);
+    let (log, rad) = (Log::default(), batches());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let runner = fake_runner(&log, &rad).with("derechos", move |_, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Err(derechos_down())
+    });
+    let (summary, _) = run_with(&env, &cfg, &runner);
+
+    assert!(summary.is_err(), "nothing got past derechos");
+    // 12 invoices, one retry each: 24 attempts. Once the breaker opened most
+    // of them were refused without calling the provider.
+    let asked = calls.load(Ordering::SeqCst);
+    assert!(asked >= 4, "the first ones had to fail to open it: {asked}");
+    assert!(
+        asked < 16,
+        "an open breaker spares the provider: {asked} of 24"
+    );
+    let snapshot = env.ctx.breakers.get("derechos").snapshot();
+    assert!(snapshot.opens >= 1, "{snapshot:?}");
+    assert!(snapshot.last_error.is_some());
 }
