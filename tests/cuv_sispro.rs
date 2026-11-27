@@ -185,8 +185,15 @@ fn after_three_failed_logins_nothing_is_sent() {
         .cargar_fev_rips(b"{}".to_vec())
         .expect_err("token error");
     assert!(err.is_token());
+    assert!(
+        matches!(err, SisproError::Unreachable(_)),
+        "a login answering 5xx says nothing about the credentials: {err:?}"
+    );
     let text = err.to_string();
-    assert!(text.starts_with("sispro: token vacio: "), "{text}");
+    assert!(
+        text.starts_with("sispro: no se pudo contactar el login: "),
+        "{text}"
+    );
     assert!(text.contains("login fallo tras 3 intentos"), "{text}");
     assert!(
         text.contains("login HTTP 503 sin token (cuerpo: down)"),
@@ -204,6 +211,10 @@ fn a_credential_rejection_is_not_retried_and_never_echoes_secrets() {
     let err = sispro
         .cargar_fev_rips(b"{}".to_vec())
         .expect_err("rejected");
+    assert!(
+        matches!(err, SisproError::Token(_)),
+        "a refusal of the credentials stays a token error: {err:?}"
+    );
     let text = err.to_string();
     assert_eq!(count(&server, LOGIN), 1, "a 401 is not transient");
     assert!(
@@ -214,6 +225,18 @@ fn a_credential_rejection_is_not_retried_and_never_echoes_secrets() {
         assert!(!text.contains(secret), "{secret} leaked in {text}");
     }
     assert!(text.contains("[redacted]"), "{text}");
+}
+
+#[test]
+fn a_login_that_cannot_be_reached_is_an_outage() {
+    // Nothing listens on this port: the network is down, the credentials were
+    // never judged.
+    let down = SisproClient::new(options("http://127.0.0.1:9"), None).expect("client");
+    let err = down
+        .cargar_fev_rips(b"{}".to_vec())
+        .expect_err("login unreachable");
+    assert!(matches!(err, SisproError::Unreachable(_)), "{err:?}");
+    assert!(err.is_token() && err.is_outage(), "{err:?}");
 }
 
 #[test]

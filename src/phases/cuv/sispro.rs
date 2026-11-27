@@ -33,7 +33,7 @@ use url::Url;
 
 use super::tls::build_sispro_client;
 use crate::config::Settings;
-use crate::http::token::{FetchedToken, TokenError};
+use crate::http::token::{FetchError, FetchedToken, TokenError};
 use crate::http::{AdaptiveLimiter, TokenCache, jwt_expiry};
 
 const LOGIN_PATH: &str = "/api/Auth/LoginSISPRO";
@@ -105,14 +105,28 @@ pub enum SisproError {
     /// The login did not return a token (Java: "Token vacío").
     #[error("sispro: token vacio: {0}")]
     Token(String),
+    /// The login could not be reached (network down, timeout, 5xx/429 after
+    /// its retries): it says nothing about the credentials.
+    #[error("sispro: no se pudo contactar el login: {0}")]
+    Unreachable(String),
     /// Network error, timeout or unreadable response.
     #[error("{0}")]
     Transport(String),
 }
 
 impl SisproError {
+    /// The invoice stopped for lack of a token (refused or unreachable login):
+    /// what the SISPRO login alert counts.
     pub fn is_token(&self) -> bool {
-        matches!(self, SisproError::Token(_))
+        matches!(self, SisproError::Token(_) | SisproError::Unreachable(_))
+    }
+
+    /// SISPRO or the network is down: retrying later can cure it.
+    pub fn is_outage(&self) -> bool {
+        matches!(
+            self,
+            SisproError::Unreachable(_) | SisproError::Transport(_)
+        )
     }
 }
 
@@ -153,7 +167,7 @@ impl SisproClient {
             limiter,
         });
         let for_login = shared.clone();
-        let tokens = TokenCache::new(Duration::from_secs(60), move || for_login.login());
+        let tokens = TokenCache::new_typed(Duration::from_secs(60), move || for_login.login());
         Ok(Self { shared, tokens })
     }
 
@@ -186,11 +200,10 @@ impl SisproClient {
     }
 
     fn token(&self) -> Result<String, SisproError> {
-        self.tokens
-            .token()
-            .map_err(|(TokenError::Fetch(msg) | TokenError::Unreachable(msg))| {
-                SisproError::Token(msg)
-            })
+        self.tokens.token().map_err(|err| match err {
+            TokenError::Fetch(msg) => SisproError::Token(msg),
+            TokenError::Unreachable(msg) => SisproError::Unreachable(msg),
+        })
     }
 }
 
@@ -276,10 +289,19 @@ impl Shared {
     /// 5xx/429 and a 2xx without token) with exponential backoff and jitter.
     /// Credential-style rejections (other 4xx) and a malformed token fail at
     /// once.
-    fn login(&self) -> Result<FetchedToken, String> {
+    fn login(&self) -> Result<FetchedToken, FetchError> {
         let attempts = match self.options.login_attempts {
             0 => DEFAULT_LOGIN_ATTEMPTS,
             n => n,
+        };
+        // What a failure means for the credentials: a retryable failure is the
+        // service not answering properly, a fatal one is a refusal.
+        let verdict = |failure: &LoginFailure, message: String| {
+            if failure.retry {
+                FetchError::Unreachable(message)
+            } else {
+                FetchError::Rejected(message)
+            }
         };
         let mut tries = 1;
         loop {
@@ -296,20 +318,21 @@ impl Shared {
                 "SISPRO login failed"
             );
             if !failure.retry {
-                return Err(failure.message);
+                return Err(verdict(&failure, failure.message.clone()));
             }
             if tries >= attempts {
-                return Err(if attempts > 1 {
+                let message = if attempts > 1 {
                     format!(
                         "sispro: login fallo tras {attempts} intentos: {}",
                         failure.message
                     )
                 } else {
-                    failure.message
-                });
+                    failure.message.clone()
+                };
+                return Err(verdict(&failure, message));
             }
             if crate::shutdown::requested() {
-                return Err(failure.message);
+                return Err(verdict(&failure, failure.message.clone()));
             }
             self.sleep(self.backoff(tries));
             tries += 1;

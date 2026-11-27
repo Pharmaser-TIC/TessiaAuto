@@ -12,7 +12,7 @@ Branch: feat/resiliencia-fase-2 (from main after PR #10) | Delivery: ask-on-risk
 - Not in scope: a breaker shared between processes, anything cloud, changing the number of attempts inside one HTTP call.
 
 ## Tasks
-- [ ] T1 (S2) SISPRO and radicación login: `Unreachable` vs `Rejected` — inline — commit: pending
+- [x] T1 (S2) SISPRO and radicación login: `Unreachable` vs `Rejected` — inline — commit: see git log (RED observed as compile errors on the new variant, then GREEN)
 - [ ] T2 (S3) `CircuitBreaker` + registry + `send_with_retry` integration + wiring per provider — inline — commit: pending
 - [ ] T3 (S4) delayed retry in the pipeline, `next_attempt_at` stored, breaker-aware delay — inline — commit: pending
 - [ ] T4 (S5) CUV resend after an uncertain send: tests (and the fix only if a test shows a gap) — inline — commit: pending

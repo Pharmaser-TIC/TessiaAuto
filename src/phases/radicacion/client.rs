@@ -25,7 +25,8 @@ use super::portal::{
     Finding as PortalFinding, PortalApi, Record as PortalRecord, choose_record, parse_uploaded_at,
 };
 use crate::domain::radicacion::Step;
-use crate::http::token::FetchedToken;
+use crate::http::retry::cause_chain;
+use crate::http::token::{FetchError, FetchedToken};
 use crate::http::{
     AdaptiveLimiter, MUTUALSER_USER_AGENT, RetryPolicy, TokenCache, jwt_expiry, response_healthy,
     send_with_auth, send_with_retry,
@@ -147,7 +148,7 @@ impl MutualSerClient {
         let upload_http = crate::http::build_client(&upload_options)?;
         let login = LoginConfig::from(&cfg);
         let login_http = login_client(&cfg)?;
-        let tokens = TokenCache::new(TOKEN_SKEW, move || login.fetch(&login_http));
+        let tokens = TokenCache::new_typed(TOKEN_SKEW, move || login.fetch(&login_http));
         Ok(MutualSerClient {
             cfg,
             http,
@@ -947,39 +948,58 @@ fn login_client(cfg: &ClientConfig) -> anyhow::Result<Client> {
 }
 
 impl LoginConfig {
-    fn fetch(&self, client: &Client) -> Result<FetchedToken, String> {
+    fn fetch(&self, client: &Client) -> Result<FetchedToken, FetchError> {
         if self.url.is_empty() || self.username.is_empty() || self.password.is_empty() {
-            return Err("tocumen: login URL, username and password are required".into());
+            return Err(FetchError::Rejected(
+                "tocumen: login URL, username and password are required".into(),
+            ));
         }
         let response = client
             .post(&self.url)
             .header("Accept", "application/json")
             .json(&json!({"username": self.username, "password": self.password}))
             .send()
-            .map_err(|err| format!("tocumen: login: {}", err.without_url()))?;
+            // No answer at all: the login is unreachable, the credentials were
+            // never judged.
+            .map_err(|err| {
+                FetchError::Unreachable(format!(
+                    "tocumen: login: {}",
+                    cause_chain(&err.without_url())
+                ))
+            })?;
         let status = response.status();
         if status.is_redirection() {
-            return Err(format!(
+            return Err(FetchError::Rejected(format!(
                 "tocumen: login redirected (HTTP {})",
                 status.as_u16()
-            ));
+            )));
         }
         if status.as_u16() != 200 {
             let mut raw = Vec::new();
             let _ = response.take(2048).read_to_end(&mut raw);
-            return Err(format!(
+            let message = format!(
                 "tocumen: login failed (HTTP {}){}",
                 status.as_u16(),
                 self.body_hint(&raw)
-            ));
+            );
+            // A server that is down or throttling is not a verdict on the
+            // credentials; a 4xx refusal is.
+            return Err(if matches!(status.as_u16(), 408 | 425 | 429 | 500..=599) {
+                FetchError::Unreachable(message)
+            } else {
+                FetchError::Rejected(message)
+            });
         }
         let mut raw = Vec::new();
         let _ = response.take(1 << 20).read_to_end(&mut raw);
-        let answer: Value = serde_json::from_slice(&raw)
-            .map_err(|err| format!("tocumen: decode login response: {err}"))?;
+        let answer: Value = serde_json::from_slice(&raw).map_err(|err| {
+            FetchError::Rejected(format!("tocumen: decode login response: {err}"))
+        })?;
         let token = field(&answer, "access_token");
         if token.is_empty() {
-            return Err("tocumen: login response has no access_token".into());
+            return Err(FetchError::Rejected(
+                "tocumen: login response has no access_token".into(),
+            ));
         }
         let expires_in = answer
             .get("expires_in")
@@ -1130,6 +1150,28 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("tocumen: login failed (HTTP 403)"), "{text}");
         assert!(!text.contains("secret"), "{text}");
+    }
+
+    #[test]
+    fn a_login_that_is_down_is_told_apart_from_one_that_refuses() {
+        let refusing = MockServer::start(|_| MockResponse::text(403, "no"));
+        let text = client_for(&refusing)
+            .find_load("abc", None)
+            .expect_err("refused")
+            .to_string();
+        assert!(text.contains("no se pudo obtener el token"), "{text}");
+
+        for status in [429, 500, 503] {
+            let down = MockServer::start(move |_| MockResponse::text(status, "busy"));
+            let text = client_for(&down)
+                .find_load("abc", None)
+                .expect_err("down")
+                .to_string();
+            assert!(
+                text.contains("no se pudo contactar el servicio de autenticación"),
+                "{status}: {text}"
+            );
+        }
     }
 
     #[test]
