@@ -15,6 +15,7 @@ type Handler = fn(&ApiState, &Request) -> ApiResult;
 const ROUTES: &[(&str, &str, Handler)] = &[
     ("GET", "/api/health", routes::health::get),
     ("GET", "/api/nota-tecnica", routes::nt::get),
+    ("GET", "/api/proveedores", routes::proveedores::get),
     ("GET", "/api/cargues", read::cargues::list),
     ("GET", "/api/cargues/{id}/informe", read::informe::get),
     (

@@ -25,6 +25,106 @@ fn closed_url() -> String {
     url
 }
 
+// --- proveedores --------------------------------------------------------------
+
+#[test]
+fn providers_report_their_breaker_and_the_invoices_waiting_for_a_retry() {
+    let h = Harness::new();
+
+    // Nothing has happened: every provider is listed, closed, with no waits.
+    let calm = json(&h.get("/api/proveedores"));
+    let names: Vec<&str> = calm["proveedores"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .map(|p| p["nombre"].as_str().expect("name"))
+        .collect();
+    assert_eq!(
+        names,
+        ["cassandra", "thefactory", "derechos", "sispro", "medicar"]
+    );
+    assert!(
+        calm["proveedores"]
+            .as_array()
+            .expect("list")
+            .iter()
+            .all(|p| p["estado"] == "cerrado")
+    );
+    assert_eq!(calm["en_espera"], json!([]));
+
+    // SISPRO keeps failing: its breaker opens and says why and for how long.
+    let sispro = h.state.ctx.breakers.get("sispro");
+    for _ in 0..8 {
+        sispro.record(false, Some("sispro: no se pudo contactar el login"));
+    }
+    // Two invoices wait for a retry in cuv, one in thefactory.
+    let soon = chrono::Utc::now() + chrono::Duration::minutes(2);
+    let later = soon + chrono::Duration::minutes(8);
+    let store = h.state.ctx.proceso();
+    store
+        .schedule_retry(
+            tessia::domain::Phase::Cuv,
+            "FEV1",
+            Some("C1"),
+            "TERCERO_NO_DISPONIBLE: x",
+            later,
+        )
+        .expect("s");
+    store
+        .schedule_retry(
+            tessia::domain::Phase::Cuv,
+            "FEV2",
+            Some("C1"),
+            "TERCERO_NO_DISPONIBLE: x",
+            soon,
+        )
+        .expect("s");
+    store
+        .schedule_retry(
+            tessia::domain::Phase::TheFactory,
+            "FEV3",
+            Some("C1"),
+            "TERCERO_NO_DISPONIBLE: y",
+            later,
+        )
+        .expect("s");
+
+    let body = json(&h.get("/api/proveedores"));
+    let sispro_row = body["proveedores"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .find(|p| p["nombre"] == "sispro")
+        .expect("sispro");
+    assert_eq!(sispro_row["estado"], "abierto");
+    assert_eq!(sispro_row["fallas"], 8);
+    assert_eq!(
+        sispro_row["ultimo_error"],
+        "sispro: no se pudo contactar el login"
+    );
+    assert!(sispro_row["reintento_en_s"].as_u64().expect("secs") > 0);
+
+    let waiting = body["en_espera"].as_array().expect("list");
+    let fases: Vec<(&str, u64)> = waiting
+        .iter()
+        .map(|w| {
+            (
+                w["fase"].as_str().expect("fase"),
+                w["facturas"].as_u64().expect("n"),
+            )
+        })
+        .collect();
+    assert_eq!(fases, [("thefactory", 1), ("cuv", 2)], "pipeline order");
+    let cuv = waiting.iter().find(|w| w["fase"] == "cuv").expect("cuv");
+    let next = chrono::DateTime::parse_from_rfc3339(cuv["proximo_reintento"].as_str().expect("at"))
+        .expect("rfc3339");
+    assert_eq!(
+        next.timestamp(),
+        soon.timestamp(),
+        "the earliest of the phase"
+    );
+}
+
 // --- health -------------------------------------------------------------------
 
 #[test]

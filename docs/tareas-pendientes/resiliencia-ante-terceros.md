@@ -1,6 +1,6 @@
 # Tarea pendiente: resiliencia ante la caída de terceros
 
-Estado: **en curso** (rama `feat/resiliencia-terceros`). Hechos los pasos 1 y 2; el resto sigue pendiente. Detalle en `odd/tasks/resiliencia-terceros.md`.
+Estado: **hechos los seis pasos** (PR #9 y rama `feat/resiliencia-fase-2`). Detalle en `odd/tasks/resiliencia-terceros.md` y `odd/tasks/resiliencia-fase-2.md`.
 
 ## Problema
 
@@ -15,10 +15,10 @@ Evidencia (corridas del 2026-11-24):
 
 1. **[hecho]** **Clasificar errores**: transitorio (red, timeout, 5xx, tercero caído) vs definitivo (dato inválido, no encontrado). Separar en `TokenError` el rechazo real (400/401) del fallo de transporte; mostrar la causa real de `reqwest`, no solo "error sending request".
 2. **[hecho]** **Transitorios reanudables**: la factura queda para reintentar y la corrida no se cancela. Más margen de reintento en almacenamiento (más intentos, esperas de segundos).
-3. **Reintento programado** con `next_attempt_at` (minutos, luego horas).
-4. **Cortacircuitos por tercero**: pausar solo la fase afectada cuando su proveedor falla por encima de un umbral; las demás siguen.
-5. **Idempotencia en efectos externos**: `cuv` (envío a SISPRO) no se reintenta hoy porque no es idempotente.
-6. **Visibilidad por tercero**: tasa de error, trabajo en espera y próximo reintento por proveedor.
+3. **[hecho]** **Reintento programado** con `next_attempt_at` (minutos, luego horas).
+4. **[hecho]** **Cortacircuitos por tercero**: pausar solo la fase afectada cuando su proveedor falla por encima de un umbral; las demás siguen.
+5. **[hecho]** **Idempotencia en efectos externos**: `cuv` (envío a SISPRO) no se reintenta hoy porque no es idempotente.
+6. **[hecho]** **Visibilidad por tercero**: tasa de error, trabajo en espera y próximo reintento por proveedor.
 
 Relacionado (más grande, después): latido de claims, cola durable, limitador compartido, worker por fase con el mismo binario. Ver `docs/mapa-de-procesos/00-indice-y-vision.md`.
 

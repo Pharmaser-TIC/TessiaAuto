@@ -95,6 +95,9 @@ struct Inner {
     /// Consecutive openings without a success in between (sets the open period).
     opens: u32,
     last_error: Option<String>,
+    /// Outcomes and failures that opened it, kept while it is not closed so
+    /// the display can say what happened (the window is cleared on opening).
+    tripped: (usize, usize),
 }
 
 type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
@@ -131,6 +134,7 @@ impl CircuitBreaker {
                 recent: VecDeque::new(),
                 opens: 0,
                 last_error: None,
+                tripped: (0, 0),
             }),
         }
     }
@@ -190,6 +194,7 @@ impl CircuitBreaker {
                     inner.state = State::Closed;
                     inner.recent.clear();
                     inner.opens = 0;
+                    inner.tripped = (0, 0);
                 } else {
                     self.open(&mut inner, now);
                 }
@@ -224,6 +229,10 @@ impl CircuitBreaker {
             .saturating_mul(1u32 << inner.opens.min(16));
         let period = doubled.min(self.cfg.max_open);
         inner.opens = inner.opens.saturating_add(1);
+        let calls = inner.recent.len();
+        if calls > 0 {
+            inner.tripped = (calls, inner.recent.iter().filter(|ok| !**ok).count());
+        }
         inner.recent.clear();
         inner.state = State::Open {
             until: now + period,
@@ -239,11 +248,19 @@ impl CircuitBreaker {
             // The period is over: the next caller probes.
             State::Open { .. } | State::HalfOpen { .. } => (BreakerState::HalfOpen, None),
         };
+        let (calls, failures) = match state {
+            BreakerState::Closed => (
+                inner.recent.len(),
+                inner.recent.iter().filter(|ok| !**ok).count(),
+            ),
+            // Not closed: what opened it.
+            _ => inner.tripped,
+        };
         BreakerSnapshot {
             name: self.name.clone(),
             state,
-            calls: inner.recent.len(),
-            failures: inner.recent.iter().filter(|ok| !**ok).count(),
+            calls,
+            failures,
             last_error: inner.last_error.clone(),
             retry_in,
             opens: inner.opens,
@@ -351,6 +368,11 @@ mod tests {
         assert_eq!(b.allow().expect_err("still open"), Duration::from_secs(20));
         let snap = b.snapshot();
         assert_eq!(snap.state, BreakerState::Open);
+        assert_eq!(
+            (snap.calls, snap.failures),
+            (4, 4),
+            "it says what opened it, not an empty window"
+        );
         assert_eq!(snap.retry_in, Some(Duration::from_secs(20)));
         assert_eq!(snap.last_error.as_deref(), Some("down"));
     }
