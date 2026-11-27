@@ -51,7 +51,7 @@
           },
           {
             "codPrestador": "130018500201",
-            "idMIPRES": null,
+            "idMIPRES": "SSC123",
             "fechaDispensAdmon": "2026-09-02 16:59",
             "codDiagnosticoPrincipal": "E11X",
             "codDiagnosticoPrincipalCIE11": null,
@@ -84,7 +84,7 @@
           {
             "codPrestador": "130018500201",
             "numAutorizacion": "",
-            "idMIPRES": null,
+            "idMIPRES": "x-99",
             "fechaSuministroTecnologia": "2026-09-03 10:30",
             "tipoOS": "01",
             "codTecnologiaSalud": "CUM-OS",
