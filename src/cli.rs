@@ -86,6 +86,20 @@ mod tests {
     }
 
     #[test]
+    fn the_commands_the_flow_never_used_are_gone() {
+        for args in [
+            ["fev", "ajustar"].as_slice(),
+            ["cuv", "barrer"].as_slice(),
+            ["radicacion", "recheck-step2"].as_slice(),
+        ] {
+            let argv: Vec<&str> = std::iter::once("facturacion")
+                .chain(args.iter().copied())
+                .collect();
+            assert!(Cli::try_parse_from(&argv).is_err(), "{args:?} still parses");
+        }
+    }
+
+    #[test]
     fn every_go_command_parses() {
         let commands: &[&[&str]] = &[
             &["convenio", "descargar"],
@@ -105,14 +119,11 @@ mod tests {
             &["conciliar", "--cargue", "C1"],
             &["thefactory", "descargar"],
             &["derechos", "validar"],
-            &["fev", "ajustar"],
             &["fev", "verificar"],
             &["rips", "generar"],
             &["cuv", "generar"],
-            &["cuv", "barrer"],
             &["soporte", "generar"],
             &["radicacion", "run"],
-            &["radicacion", "recheck-step2"],
             &["config", "check", "database.url"],
             &["db", "migrate"],
         ];

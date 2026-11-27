@@ -1,4 +1,4 @@
-//! `radicacion run` and `radicacion recheck-step2`: the Mutual Ser 4-step filing pipeline.
+//! `radicacion run`: the Mutual Ser 4-step filing pipeline.
 //!
 //! Port of Go `cmd_radicacion.go` + `internal/radicacion` (+ the Mutual Ser
 //! adapter). Layout of this module:
@@ -9,7 +9,7 @@
 //! * [`files`] / [`archive`]: the cargue's artifacts as the step files, and
 //!   the "filed" marker that replaces moving files into `Radicado/`;
 //! * [`values`]: the step 1 value check inputs;
-//! * [`recheck`], [`timings`]: `recheck-step2` and the "Tiempos de radicación" report.
+//! * [`timings`]: the "Tiempos de radicación" report.
 //!
 //! One machine files a cargue at a time: [`run_cargue`] holds the lease
 //! `radicacion:<cargue>` (renewed while running). `proceso run` should call
@@ -25,7 +25,6 @@ pub mod files;
 pub mod model;
 pub mod portal;
 pub mod progress;
-pub mod recheck;
 pub mod rules;
 pub mod timings;
 pub mod values;
@@ -78,7 +77,6 @@ pub struct RunOutcome {
 pub fn run(ctx: &AppContext, args: Args) -> Result<()> {
     match args.command {
         cli::Command::Run(args) => run_command(ctx, &args),
-        cli::Command::RecheckStep2(args) => recheck_command(ctx, &args),
     }
 }
 
@@ -124,21 +122,6 @@ fn engine_config(args: &cli::RunArgs) -> Config {
         only_step: args.step.and_then(|n| Step::from_i16(i16::from(n))),
         ..Config::default()
     }
-}
-
-fn recheck_command(ctx: &AppContext, args: &cli::RecheckStep2Args) -> Result<()> {
-    let invoices = normalized(&args.invoices);
-    if invoices.is_empty() {
-        bail!("uso: facturacion radicacion recheck-step2 --invoices a,b");
-    }
-    let nit = nit(ctx)?;
-    let api = build_client(ctx, &nit, None)?;
-    let report = recheck::recheck_step2(&api, &ctx.radicacion(), &invoices)?;
-    println!("{}", report.line());
-    if report.interrupted {
-        bail!("interrumpido");
-    }
-    Ok(())
 }
 
 /// Runs the phase for the invoices of `req` (called by `proceso run`) with the

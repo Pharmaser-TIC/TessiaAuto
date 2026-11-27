@@ -1,41 +1,12 @@
-//! Standalone XML support tools (FEV `ajustar` / `verificar`) and the invoice
-//! value readers:
-//!
-//! - `cucon`: `Vista_XML_CUCON` ("Corregir XML de contrato a CUCON").
-//! - `cuota_moderadora`: `Vista_AjustarXMLCuotaModeradora`.
-//! - `read_total` / `numero_convenio`: the value check of
-//!   `validarYConciliarValorAntesJson`.
+//! The invoice value readers: `read_total` / `numero_convenio`, the value check
+//! of `validarYConciliarValorAntesJson` (FEV `verificar`).
 
 use std::sync::LazyLock;
 
 use regex::Regex;
 use rust_decimal::Decimal;
 
-use super::download::{prepaid_re, scheme_id_for};
-use super::ministerio::{ContratoOutcome, replace_contrato};
-use super::text::{decode, group, java_trim, re, remove_all, replace_first};
-
-/// The `Vista_XML_CUCON` counter an XML falls in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContratoResult {
-    /// NUMERO_CONTRATO was 22382 and has been replaced.
-    Modificado,
-    /// NUMERO_CONTRATO has another value.
-    ContratoDiferente,
-    /// The XML has no NUMERO_CONTRATO.
-    SinContrato,
-}
-
-impl ContratoResult {
-    /// Counter name as printed by the Go tool.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Modificado => "modificado",
-            Self::ContratoDiferente => "contrato_diferente",
-            Self::SinContrato => "sin_contrato",
-        }
-    }
-}
+use super::text::{decode, group, java_trim, re};
 
 /// Parses a Java `new BigDecimal(String)` literal (sign, digits with optional
 /// `.`, optional exponent; no surrounding whitespace). Returns `None` when
@@ -81,146 +52,6 @@ pub fn parse_decimal_literal(s: &str) -> Option<Decimal> {
         unscaled = -unscaled;
     }
     Decimal::try_from_i128_with_scale(unscaled, u32::try_from(scale).ok()?).ok()
-}
-
-/// `new BigDecimal(trim)`, zero when empty or invalid.
-fn parse_decimal(v: &str) -> Decimal {
-    parse_decimal_literal(java_trim(v)).unwrap_or(Decimal::ZERO)
-}
-
-/// Replaces NUMERO_CONTRATO = 22382 with `cucon`, like
-/// `reemplazarNumeroContratoSiValorActual(..., "22382", cucon)`. The output is
-/// the input bytes when nothing was replaced. Java rewrote the file even when
-/// `cucon` was 22382; the result is then [`ContratoResult::Modificado`] with
-/// unchanged bytes.
-pub fn cucon(b: &[u8], cucon: &str) -> (Vec<u8>, ContratoResult) {
-    let s = decode(b);
-    let (out, res) = replace_contrato(&s, cucon);
-    let res = match res {
-        ContratoOutcome::Modificado => ContratoResult::Modificado,
-        ContratoOutcome::Diferente => ContratoResult::ContratoDiferente,
-        ContratoOutcome::Sin => ContratoResult::SinContrato,
-    };
-    if out == s {
-        (b.to_vec(), res)
-    } else {
-        (out.into_bytes(), res)
-    }
-}
-
-static CUOTA_ID_RE: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(<cbc:ID)(?:\s+[^>]*)?(>\s*([^<]+?)\s*</cbc:ID>)"));
-static PAID_AMOUNT_RE: LazyLock<Regex> =
-    LazyLock::new(|| re(r"<cbc:PaidAmount(?-u:\b)[^>]*>([^<]*)</cbc:PaidAmount>"));
-static PREPAID_AMOUNT_RE: LazyLock<Regex> =
-    LazyLock::new(|| re(r"<cbc:PrepaidAmount(?-u:\b)[^>]*>([^<]*)</cbc:PrepaidAmount>"));
-static ANTICIPOS_RE: LazyLock<Regex> = LazyLock::new(|| {
-    re(
-        r"\s*<AdditionalInformation>\s*<Name>\s*ANTICIPOS\s*</Name>\s*<Value(?:\s+[^>]*)?>([^<]*)</Value>\s*</AdditionalInformation>",
-    )
-});
-
-/// Result of [`cuota_moderadora`].
-#[derive(Debug)]
-pub struct CuotaResult {
-    /// The adjusted XML, or the input bytes when unchanged.
-    pub xml: Vec<u8>,
-    /// Whether the XML changed.
-    pub changed: bool,
-    /// The `ADVERTENCIA` lines Java printed.
-    pub warnings: Vec<String>,
-}
-
-/// `Vista_AjustarXMLCuotaModeradora.procesarXml`: when the XML has an anticipo
-/// to legalize (ANTICIPOS != 0, or PrepaidPayment PaidAmounts > 0) every
-/// PrepaidPayment ID gets its `schemeID` and the ANTICIPOS field is removed.
-/// `name` is the file name used in the warnings.
-pub fn cuota_moderadora(b: &[u8], name: &str) -> CuotaResult {
-    let s = decode(b);
-    if !tiene_anticipo(&s) {
-        return CuotaResult {
-            xml: b.to_vec(),
-            changed: false,
-            warnings: Vec::new(),
-        };
-    }
-    let out = prepaid_re()
-        .replace_all(&s, |caps: &regex::Captures<'_>| {
-            let block = group(caps, 0);
-            replace_first(&CUOTA_ID_RE, block, |m| {
-                format!(
-                    "{} schemeID=\"{}\"{}",
-                    group(m, 1),
-                    scheme_id_for(block),
-                    group(m, 2)
-                )
-            })
-            .unwrap_or_else(|| block.to_owned())
-        })
-        .into_owned();
-    let out = remove_all(&ANTICIPOS_RE, &out);
-    let warnings = verificar_prepaid_amount(&out, name);
-    if out == s {
-        CuotaResult {
-            xml: b.to_vec(),
-            changed: false,
-            warnings,
-        }
-    } else {
-        CuotaResult {
-            xml: out.into_bytes(),
-            changed: true,
-            warnings,
-        }
-    }
-}
-
-fn tiene_anticipo(s: &str) -> bool {
-    if let Some(m) = ANTICIPOS_RE.captures(s) {
-        let v = java_trim(group(&m, 1));
-        if !v.is_empty() && !es_valor_cero(v) {
-            return true;
-        }
-    }
-    suma_paid_amount(s) > Decimal::ZERO
-}
-
-fn es_valor_cero(v: &str) -> bool {
-    match parse_decimal_literal(java_trim(v)) {
-        Some(d) => d.is_zero(),
-        None => java_trim(v) == "0",
-    }
-}
-
-fn suma_paid_amount(s: &str) -> Decimal {
-    let mut total = Decimal::ZERO;
-    for block in prepaid_re().find_iter(s) {
-        if let Some(m) = PAID_AMOUNT_RE.captures(block.as_str()) {
-            total = total
-                .checked_add(parse_decimal(group(&m, 1)))
-                .unwrap_or(total);
-        }
-    }
-    total
-}
-
-fn verificar_prepaid_amount(s: &str, name: &str) -> Vec<String> {
-    let suma = suma_paid_amount(s);
-    if suma <= Decimal::ZERO {
-        return Vec::new();
-    }
-    let Some(m) = PREPAID_AMOUNT_RE.captures(s) else {
-        return vec![format!(
-            "ADVERTENCIA {name}: no se encontro cbc:PrepaidAmount para anticipos por {suma}"
-        )];
-    };
-    let p = parse_decimal(group(&m, 1));
-    if p != suma {
-        return vec![format!(
-            "ADVERTENCIA {name}: PrepaidAmount={p} no coincide con suma PaidAmount={suma}"
-        )];
-    }
-    Vec::new()
 }
 
 static CDATA_RE: LazyLock<Regex> =

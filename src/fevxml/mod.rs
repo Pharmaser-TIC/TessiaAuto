@@ -19,9 +19,7 @@ mod period;
 mod text;
 mod zipio;
 
-pub use ajuste::{
-    ContratoResult, cucon, cuota_moderadora, numero_convenio, parse_decimal_literal, read_total,
-};
+pub use ajuste::{numero_convenio, parse_decimal_literal, read_total};
 pub use download::{normalize_download, validate};
 pub use invoice_total::{
     InvoiceXmlFile, XmlState, existing_xml_pdf_zip, format_total, invoice_total,

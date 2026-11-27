@@ -1,4 +1,4 @@
-//! Command line of `radicacion run` and `radicacion recheck-step2`.
+//! Command line of `radicacion run`.
 
 use std::time::Duration;
 
@@ -25,15 +25,6 @@ pub enum Command {
                       Sin --invoices se radican todas las facturas que tienen archivos en el cargue."
     )]
     Run(RunArgs),
-    #[command(
-        name = "recheck-step2",
-        about = "Revisa de nuevo el paso 2 (CUV) de facturas ya radicadas contra filter-xml",
-        long_about = "Reverifica el paso 2 (TXT CUV) de facturas ya radicadas, solo contra filter-xml. \
-                      Un statusType=3 registra una nota de ajuste en radicacion_estado; un resultado \
-                      negativo nunca borra un paso confirmado. Imprime \
-                      total= confirmed= not_confirmed= rejected= errors="
-    )]
-    RecheckStep2(RecheckStep2Args),
 }
 
 /// A duration with a sign (`-1s` disables some caps), parsed Go-style.
@@ -173,14 +164,6 @@ impl RunArgs {
     }
 }
 
-/// Arguments of the `recheck-step2` subcommand.
-#[derive(Debug, Clone, ClapArgs, Default)]
-pub struct RecheckStep2Args {
-    /// Facturas a reverificar (separadas por coma)
-    #[arg(long, value_name = "FACTURAS", value_delimiter = ',')]
-    pub invoices: Vec<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -198,7 +181,6 @@ mod tests {
         full.extend_from_slice(argv);
         match Wrapper::try_parse_from(full)?.args.command {
             Command::Run(args) => Ok(args),
-            Command::RecheckStep2(_) => unreachable!(),
         }
     }
 

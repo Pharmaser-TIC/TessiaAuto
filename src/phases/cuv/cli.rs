@@ -1,4 +1,4 @@
-//! Command line of `cuv generar` and `cuv barrer`.
+//! Command line of `cuv generar`.
 
 use clap::{Args as ClapArgs, Subcommand};
 
@@ -32,17 +32,6 @@ company.codigo_prestador y minsalud.base_url, tipo_doc, numero_doc, clave y nit;
 minsalud.ca_file o minsalud.tls_pin_sha256 para el certificado del servidor."
     )]
     Generar(GenerarArgs),
-    #[command(
-        name = "barrer",
-        about = "Corrige los TXT de CUV del cargue (RVG18 -> CUV existente + ProcesoId)",
-        long_about = "Reescribe cada TXT del cargue que sea un objeto JSON como \
-Vista_ActualizarCUVMinisterioLocal: ResultState=true, NumFactura desde RutaArchivos y, para un \
-resultado RVG18, el CUV existente pasa a CodigoUnicoValidacion, el ProcesoId sale de ConsultarCUV \
-y ResultadosValidacion queda vacío. Los demás TXT no se tocan; los que Java no podía procesar se \
-informan como ERROR y no se escriben. Un <F>.txt reescrito que ahora tiene CUV queda DONE en la \
-fase cuv."
-    )]
-    Barrer(BarrerArgs),
 }
 
 /// Arguments of the `generar` subcommand.
@@ -50,12 +39,4 @@ fase cuv."
 pub struct GenerarArgs {
     #[command(flatten)]
     pub common: CommonArgs,
-}
-
-/// Arguments of the `barrer` subcommand.
-#[derive(Debug, Clone, ClapArgs)]
-pub struct BarrerArgs {
-    /// Cargue a barrer (el nombre del CSV sin extensión, p. ej. Convenio_21102026_21102026)
-    #[arg(long, value_name = "ID")]
-    pub cargue: Option<String>,
 }
