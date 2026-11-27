@@ -272,10 +272,10 @@ pub fn run_phase(ctx: &AppContext, req: &PhaseRequest) -> anyhow::Result<PhaseRe
 pub fn run(ctx: &AppContext, args: Args) -> anyhow::Result<()>;                           // command line entry
 ```
 
-`fev` exposes `run_ajustar_phase` and `run_verificar_phase`; `convenio_descargar` and `proceso` have no
+`fev` exposes `run_verificar_phase`; `convenio_descargar` and `proceso` have no
 `run_phase`. `CommonArgs` (`--cargue`, `--invoices a,b`, `--workers N`) can be flattened into a phase's
 clap `Args`. Each module's `cli.rs` already defines `Args` (struct, or struct + `Command` enum for
-`fev ajustar|verificar`, `cuv generar|barrer`, `radicacion run|recheck-step2`, ...) and is wired in `crate::cli`.
+`fev verificar`, `cuv generar`, `radicacion run`, ...) and is wired in `crate::cli`.
 
 ## Dataset store
 

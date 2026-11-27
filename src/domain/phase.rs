@@ -13,7 +13,8 @@ pub enum Phase {
     Derechos,
     /// `thefactory descargar` (XML, PDF, ZIP XML/PDF).
     TheFactory,
-    /// `fev ajustar`.
+    /// The retired `fev ajustar` command. Kept only so the rows already stored
+    /// under `fev_ajuste` still read; nothing writes it any more.
     FevAjuste,
     /// `fev verificar` (XML total against the convenio).
     FevValor,

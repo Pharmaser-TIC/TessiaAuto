@@ -164,7 +164,6 @@ struct Fixture {
     db: TestDb,
     ctx: AppContext,
     server: MockServer,
-    portal: Arc<Mutex<Portal>>,
 }
 
 fn fast_options() -> RunOptions {
@@ -230,12 +229,7 @@ fn fixture(invoices: &[(&str, &str, &str)]) -> Fixture {
     DatasetStore::new(db.pool())
         .replace(&dataset.build(), false)
         .expect("dataset");
-    Fixture {
-        db,
-        ctx,
-        server,
-        portal,
-    }
+    Fixture { db, ctx, server }
 }
 
 impl Fixture {
@@ -404,45 +398,6 @@ fn missing_credentials_are_reported_by_key() {
         "{text}"
     );
     assert!(!text.contains("secret"));
-}
-
-#[test]
-fn recheck_step2_records_a_rejected_cuv_as_an_adjustment_note() {
-    let f = fixture(&[("FEV1", "1000.00", "1000")]);
-    f.portal.lock().expect("portal").xml_status_type = Some("3");
-    let args = radicacion::Args {
-        command: radicacion::cli::Command::RecheckStep2(radicacion::cli::RecheckStep2Args {
-            invoices: vec!["fev-1".into()],
-        }),
-    };
-    radicacion::run(&f.ctx, args).expect("recheck");
-    let st = f
-        .ctx
-        .radicacion()
-        .load(&["FEV1".into()])
-        .expect("states")
-        .remove("FEV1")
-        .expect("row");
-    assert_eq!((st.step, st.status), (Step::Cuv, RadStatus::AdjustmentNote));
-    assert!(
-        st.last_detail
-            .starts_with("paso=2 filter-xml reverificacion factura=FEV1 encontrado=true"),
-        "{}",
-        st.last_detail
-    );
-    assert!(
-        st.last_detail
-            .ends_with("statusType=3 id= errores= confirmado=false"),
-        "{}",
-        st.last_detail
-    );
-
-    let empty = radicacion::Args {
-        command: radicacion::cli::Command::RecheckStep2(
-            radicacion::cli::RecheckStep2Args::default(),
-        ),
-    };
-    assert!(radicacion::run(&f.ctx, empty).is_err());
 }
 
 #[test]

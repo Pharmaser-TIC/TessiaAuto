@@ -1,11 +1,10 @@
-//! The two rewrites of SISPRO's TXT: the end-of-run sweep of `cuv generar`
-//! (`cuv.Sweep`, Java `barrerTxtCuvMinisterioAlFinalizar`) and the folder sweep
-//! of `cuv barrer` (`cuv.SweepLocal`, Java `Vista_ActualizarCUVMinisterioLocal`).
+//! The end-of-run sweep of SISPRO's TXT in `cuv generar` (`cuv.Sweep`, Java
+//! `barrerTxtCuvMinisterioAlFinalizar`).
 //!
-//! Both read the TXT as an order-preserving JSON tree, force `ResultState` to
-//! `true`, derive `NumFactura` from `RutaArchivos`, fix the RVG18 ("already
-//! validated") response and write the tree back with Gson pretty printing and
-//! without nulls. Their rules differ (see each function), as in Go.
+//! It reads the TXT as an order-preserving JSON tree, forces `ResultState` to
+//! `true`, derives `NumFactura` from `RutaArchivos`, fixes the RVG18 ("already
+//! validated") response and writes the tree back with Gson pretty printing and
+//! without nulls.
 
 use super::jsontree::{get, java_trim, parse_ordered, primitive_string, set};
 use crate::util::gson::{GsonOptions, Json, to_string};
@@ -21,7 +20,7 @@ pub struct Swept {
     pub out: Option<String>,
     /// The CUV taken from a RVG18 result ("" when none).
     pub cuv: String,
-    /// Whether a CUV was taken from a RVG18 result (`SweepLocal` only).
+    /// Whether a CUV was taken from a RVG18 result.
     pub rvg18: bool,
 }
 
@@ -125,73 +124,6 @@ fn cuv_from_rvg18(root: &[(String, Json)]) -> Result<String, String> {
     Ok(String::new())
 }
 
-/// `cuv.SweepLocal`, the screen `Vista_ActualizarCUVMinisterioLocal`:
-///
-/// * `NumFactura` is the last `\`-separated part of `RutaArchivos` (no trim,
-///   `/` is not a separator, "" gives "");
-/// * the first RVG18 result stops the search; its trimmed `Observaciones`, even
-///   "", becomes `CodigoUnicoValidacion` (a null one: no CUV);
-/// * a value Java could not read (a non-object result, a non-list or null
-///   `ResultadosValidacion`, a path made only of `\`) is an error: Java printed
-///   the stack trace and did not rewrite the file.
-pub fn sweep_local(content: &[u8], lookup: Option<ProcesoIdLookup<'_>>) -> Result<Swept, String> {
-    let Some(mut root) = parse_object(content) else {
-        return Ok(Swept::skipped());
-    };
-    set(&mut root, "ResultState", Json::Bool(true));
-    if let Some(ruta) = get(&root, "RutaArchivos").filter(|v| **v != Json::Null) {
-        let ruta = primitive_string(ruta).map_err(|e| format!("cuv: RutaArchivos: {e}"))?;
-        let name = local_file_name(&ruta)?;
-        set(&mut root, "NumFactura", Json::String(name));
-    }
-    let (cuv, rvg18) = local_rvg18(&root)?;
-    if rvg18 {
-        apply_existing_cuv(&mut root, &cuv, lookup);
-    }
-    Ok(Swept {
-        out: Some(render(root)),
-        cuv,
-        rvg18,
-    })
-}
-
-/// `ruta.split("\\\\")` last part: "" gives "", only separators is an error.
-fn local_file_name(path: &str) -> Result<String, String> {
-    if path.is_empty() {
-        return Ok(String::new());
-    }
-    let trimmed = path.trim_end_matches('\\');
-    if trimmed.is_empty() {
-        return Err("cuv: RutaArchivos sin nombre de factura".into());
-    }
-    Ok(trimmed.rsplit('\\').next().unwrap_or("").to_owned())
-}
-
-fn local_rvg18(root: &[(String, Json)]) -> Result<(String, bool), String> {
-    let Some(value) = get(root, "ResultadosValidacion") else {
-        return Ok((String::new(), false));
-    };
-    let Json::Array(items) = value else {
-        return Err("cuv: ResultadosValidacion no es una lista".into());
-    };
-    for item in items {
-        let Json::Object(result) = item else {
-            return Err("cuv: ResultadosValidacion con un elemento que no es objeto".into());
-        };
-        let Some(code) = get(result, "Codigo").filter(|v| **v != Json::Null) else {
-            continue;
-        };
-        if java_trim(&primitive_string(code)?) != "RVG18" {
-            continue;
-        }
-        return match get(result, "Observaciones").filter(|v| **v != Json::Null) {
-            Some(obs) => Ok((java_trim(&primitive_string(obs)?).to_owned(), true)),
-            None => Ok((String::new(), false)),
-        };
-    }
-    Ok((String::new(), false))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,14 +136,6 @@ mod tests {
         assert_eq!(last_segment("FVS3"), "FVS3");
         assert_eq!(last_segment(""), "");
         assert_eq!(last_segment("\\\\"), "");
-    }
-
-    #[test]
-    fn local_file_name_only_splits_on_backslash() {
-        assert_eq!(local_file_name(r"C:\x\FVS1\").expect("n"), "FVS1");
-        assert_eq!(local_file_name("a/b/FVS1").expect("n"), "a/b/FVS1");
-        assert_eq!(local_file_name("").expect("n"), "");
-        assert!(local_file_name(r"\\\").is_err());
     }
 
     #[test]
@@ -266,29 +190,5 @@ mod tests {
         let none = |_: &str| None;
         let swept = sweep(input, Some(&none)).expect("sweep");
         assert!(swept.out.expect("out").contains("\"ProcesoId\": 0"));
-    }
-
-    #[test]
-    fn sweep_local_has_its_own_rules() {
-        // The first RVG18 stops the search even without Observaciones.
-        let input = br#"{"RutaArchivos":"C:\\x\\FVS1\\","ResultadosValidacion":[{"Codigo":"RVG18"},{"Codigo":"RVG18","Observaciones":"late"}]}"#;
-        let swept = sweep_local(input, None).expect("local");
-        assert!(!swept.rvg18 && swept.cuv.is_empty());
-        assert!(swept.out.expect("out").contains("\"NumFactura\": \"FVS1\""));
-        // An empty Observaciones is a RVG18 fix with an empty CUV.
-        let input = br#"{"ResultadosValidacion":[{"Codigo":"RVG18","Observaciones":" "}]}"#;
-        let swept = sweep_local(input, None).expect("local");
-        assert!(swept.rvg18 && swept.cuv.is_empty());
-        assert!(
-            swept
-                .out
-                .expect("out")
-                .contains("\"CodigoUnicoValidacion\": \"\"")
-        );
-        // A null ResultadosValidacion is an error here (not in `sweep`).
-        assert!(sweep_local(br#"{"ResultadosValidacion":null}"#, None).is_err());
-        assert!(sweep_local(br#"{"ResultadosValidacion":[1]}"#, None).is_err());
-        assert!(sweep(br#"{"ResultadosValidacion":null}"#, None).is_ok());
-        assert!(sweep_local(b"nope", None).expect("skip").out.is_none());
     }
 }

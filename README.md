@@ -26,12 +26,12 @@ facturacion proceso run <CARGUE> [flags]       # whole per-invoice pipeline + ra
 facturacion diario [--fecha YYYY-MM-DD]        # previous day end to end (cron entry point)
 facturacion thefactory descargar --cargue ID
 facturacion derechos validar --cargue ID
-facturacion fev ajustar --op cucon|cuota --cargue ID   |   facturacion fev verificar --cargue ID
+facturacion fev verificar --cargue ID
 facturacion rips generar --cargue ID
-facturacion cuv generar --cargue ID   |   facturacion cuv barrer --cargue ID
+facturacion cuv generar --cargue ID
 facturacion soporte generar --cargue ID [--regenerar]
 facturacion conciliar --cargue ID
-facturacion radicacion run <CARGUE> [--step 1-4 ...]   |   facturacion radicacion recheck-step2 --invoices a,b
+facturacion radicacion run <CARGUE> [--step 1-4 ...]
 facturacion config check [clave...]            # which keys are set (never prints values)
 facturacion db migrate                         # idempotent, safe from several machines
 facturacion desktop                            # desktop window; also what runs with no arguments

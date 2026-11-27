@@ -6,12 +6,12 @@
 //! | [`convenio_preparar`] | `convenio preparar` | yes |
 //! | [`thefactory`] | `thefactory descargar` | yes |
 //! | [`derechos`] | `derechos validar` | yes |
-//! | [`fev`] | `fev ajustar`, `fev verificar` | `run_ajustar_phase`, `run_verificar_phase` |
+//! | [`fev`] | `fev verificar` | `run_verificar_phase` |
 //! | [`conciliar`] | `conciliar` | yes |
 //! | [`rips`] | `rips generar` | yes |
-//! | [`cuv`] | `cuv generar`, `cuv barrer` | yes (`generar`) |
+//! | [`cuv`] | `cuv generar` | yes (`generar`) |
 //! | [`soporte`] | `soporte generar` | yes |
-//! | [`radicacion`] | `radicacion run`, `radicacion recheck-step2` | yes |
+//! | [`radicacion`] | `radicacion run` | yes |
 //! | [`proceso`] | `proceso run` | no (it is the caller) |
 //!
 //! Each module has `cli.rs` (the clap `Args`, already wired in `crate::cli`)
