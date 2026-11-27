@@ -18,6 +18,19 @@ pub enum TokenError {
     /// needed it failing).
     #[error("no se pudo obtener el token: {0}")]
     Fetch(String),
+    /// The login service could not be reached (network, DNS, TLS, 5xx): it
+    /// says nothing about the credentials.
+    #[error("no se pudo contactar el servicio de autenticación: {0}")]
+    Unreachable(String),
+}
+
+/// Why a typed fetch function failed (see [`TokenCache::new_typed`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchError {
+    /// The login answered but refused, or answered nonsense.
+    Rejected(String),
+    /// The login could not be reached or answered 5xx/408/425/429.
+    Unreachable(String),
 }
 
 /// What the fetch function returns.
@@ -28,7 +41,7 @@ pub struct FetchedToken {
     pub expires_at: Option<SystemTime>,
 }
 
-type FetchFn = dyn Fn() -> Result<FetchedToken, String> + Send + Sync;
+type FetchFn = dyn Fn() -> Result<FetchedToken, FetchError> + Send + Sync;
 
 #[derive(Default)]
 struct Cached {
@@ -52,6 +65,15 @@ impl TokenCache {
         skew: Duration,
         fetch: impl Fn() -> Result<FetchedToken, String> + Send + Sync + 'static,
     ) -> Self {
+        Self::new_typed(skew, move || fetch().map_err(FetchError::Rejected))
+    }
+
+    /// Like [`TokenCache::new`], for a fetch that tells a refused login from
+    /// one that could not be reached.
+    pub fn new_typed(
+        skew: Duration,
+        fetch: impl Fn() -> Result<FetchedToken, FetchError> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             fetch: Box::new(fetch),
             skew,
@@ -72,7 +94,10 @@ impl TokenCache {
         if fresh {
             return Ok(cached.token.clone());
         }
-        let fetched = (self.fetch)().map_err(TokenError::Fetch)?;
+        let fetched = (self.fetch)().map_err(|err| match err {
+            FetchError::Rejected(message) => TokenError::Fetch(message),
+            FetchError::Unreachable(message) => TokenError::Unreachable(message),
+        })?;
         if fetched.token.is_empty() {
             return Err(TokenError::Fetch("token vacío".into()));
         }

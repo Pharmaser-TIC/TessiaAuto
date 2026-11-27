@@ -39,9 +39,14 @@ pub enum StorageError {
     /// The object does not exist.
     #[error("objeto no encontrado: {0}")]
     NotFound(String),
-    /// The service answered with an error or could not be reached.
+    /// The service answered with an error (a rejection, a bad request).
     #[error("almacenamiento de objetos: {0}")]
     Failed(String),
+    /// The service could not be reached or answered 5xx/408/429 after the
+    /// retries: an outage of the provider, not a fault of the invoice. The
+    /// work is worth retrying later.
+    #[error("almacenamiento de objetos: {0}")]
+    Unavailable(String),
     /// A local file operation failed.
     #[error("archivo local: {0}")]
     Io(#[from] std::io::Error),

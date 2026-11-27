@@ -135,7 +135,7 @@ impl RetryPolicy {
 /// string or credentials.
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
-    #[error("{method} {url}: se rindió tras {attempts} intentos: {source}")]
+    #[error("{method} {url}: se rindió tras {attempts} intentos: {}", cause_chain(.source))]
     Transport {
         method: String,
         url: String,
@@ -264,9 +264,42 @@ pub fn send_with_retry(
     }
 }
 
+/// The error and its causes joined with `: `, without repeating a cause whose
+/// text is already contained in the previous one. `reqwest` wraps the useful
+/// part (DNS, refused connection, TLS, reset) under "error sending request",
+/// so the top-level text alone does not say what failed. Bounded.
+pub(crate) fn cause_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    const MAX: usize = 300;
+    let mut text = err.to_string();
+    let mut next = err.source();
+    while let Some(cause) = next {
+        let part = cause.to_string();
+        if !part.is_empty() && !text.contains(&part) {
+            text.push_str(": ");
+            text.push_str(&part);
+        }
+        next = cause.source();
+    }
+    truncate_at_boundary(&mut text, MAX);
+    text
+}
+
+/// Cuts `text` to at most `max` bytes without splitting a character (OS
+/// errors on localized systems carry accents) and marks the cut.
+fn truncate_at_boundary(text: &mut String, max: usize) {
+    if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("...");
+    }
+}
+
 /// Sanitized transport error text: the cause without the URL, bounded.
 fn describe_error(err: reqwest::Error) -> String {
-    const MAX: usize = 200;
+    const MAX: usize = 300;
     let kind = if err.is_timeout() {
         "timeout"
     } else if err.is_connect() {
@@ -274,11 +307,8 @@ fn describe_error(err: reqwest::Error) -> String {
     } else {
         "request"
     };
-    let mut text = format!("{kind}: {}", err.without_url());
-    if text.len() > MAX {
-        text.truncate(MAX);
-        text.push_str("...");
-    }
+    let mut text = format!("{kind}: {}", cause_chain(&err.without_url()));
+    truncate_at_boundary(&mut text, MAX);
     text
 }
 
@@ -438,6 +468,26 @@ mod tests {
             (1, 0, "/never")
         );
         assert!(!events[0].error.contains("SECRET"));
+    }
+
+    #[test]
+    fn truncation_never_splits_a_multibyte_character() {
+        let mut text = "conexión ".repeat(60);
+        truncate_at_boundary(&mut text, 301);
+        assert!(text.ends_with("...") && text.len() <= 304, "{text}");
+    }
+
+    #[test]
+    fn a_transport_error_names_its_root_cause_not_only_the_wrapper() {
+        // Nothing listens on this port: the wrapper says "error sending
+        // request", the useful part (connection refused) is a deeper cause.
+        let c = client();
+        let url = "http://127.0.0.1:9/never?token=SECRET";
+        let err = send_with_retry(&RetryPolicy::instant(1), None, || c.get(url))
+            .expect_err("transport error");
+        let text = err.to_string();
+        assert!(text.contains("os error"), "root cause missing: {text}");
+        assert!(!text.contains("SECRET"), "{text}");
     }
 
     #[test]

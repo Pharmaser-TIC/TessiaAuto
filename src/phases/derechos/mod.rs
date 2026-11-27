@@ -206,6 +206,7 @@ pub fn execute(
             results,
             stats,
             auth_failure: None,
+            outage: None,
         }),
         Some(client) => {
             let cache = ctx.derechos_cache();
@@ -243,10 +244,13 @@ pub fn execute(
             execution.report.skip(&result.invoice, SKIP_OTHER_MACHINE);
         }
     }
-    execution.failure = match validation.auth_failure {
-        Some(detail) => Some(DerechosError::AuthenticationStopped { untouched, detail }),
-        None if validator.is_some() => check_availability(&execution.stats, &policy(ctx)).err(),
-        None => None,
+    execution.failure = match (validation.auth_failure, validation.outage) {
+        (Some(detail), _) => Some(DerechosError::AuthenticationStopped { untouched, detail }),
+        (None, Some(detail)) => Some(DerechosError::ValidatorUnreachable { untouched, detail }),
+        (None, None) if validator.is_some() => {
+            check_availability(&execution.stats, &policy(ctx)).err()
+        }
+        (None, None) => None,
     };
     Ok(execution)
 }
